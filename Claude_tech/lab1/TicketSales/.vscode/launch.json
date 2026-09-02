@@ -1,0 +1,25 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Запустить сервер",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/TicketSales.Server/bin/Debug/net10.0/TicketSales.Server.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/TicketSales.Server",
+            "console": "integratedTerminal"
+        },
+        {
+            "name": "Запустить клиент",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/src/TicketSales.Client/bin/Debug/net10.0/TicketSales.Client.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/TicketSales.Client",
+            "console": "integratedTerminal"
+        }
+    ]
+}
