@@ -20,6 +20,15 @@ if (!string.IsNullOrWhiteSpace(portInput) && int.TryParse(portInput.Trim(), out 
     port = parsedPort;
 }
 
+Console.Write("Смещение локальных часов клиента в секундах (для моделирования рассинхронизации) [0]: ");
+var offsetInput = Console.ReadLine();
+var clockOffsetSeconds = 0d;
+if (!string.IsNullOrWhiteSpace(offsetInput) && double.TryParse(offsetInput.Trim(), out var parsedOffset))
+{
+    clockOffsetSeconds = parsedOffset;
+}
+var clockOffset = TimeSpan.FromSeconds(clockOffsetSeconds);
+
 using var client = new NetworkClient();
 
 try
@@ -56,6 +65,12 @@ while (running)
                 await HandleCancelTicket(client);
                 break;
             case "5":
+                HandleShowLocalTime(clockOffset);
+                break;
+            case "6":
+                await HandleSynchronizeTime(client, clockOffset);
+                break;
+            case "7":
                 running = false;
                 break;
             default:
@@ -80,8 +95,49 @@ static void PrintMenu()
     Console.WriteLine("2. Забронировать место");
     Console.WriteLine("3. Купить билет");
     Console.WriteLine("4. Отменить билет");
-    Console.WriteLine("5. Выход");
+    Console.WriteLine("5. Показать локальное время (с учетом смещения)");
+    Console.WriteLine("6. Синхронизировать время с сервером");
+    Console.WriteLine("7. Выход");
     Console.Write("Выберите пункт: ");
+}
+
+static void HandleShowLocalTime(TimeSpan clockOffset)
+{
+    var localTime = TimeSynchronizer.ApplyOffset(DateTime.UtcNow, clockOffset);
+    Console.WriteLine($"Локальное время клиента (со смещением {clockOffset.TotalSeconds:+0;-0;0}s): {localTime:HH:mm:ss.fff}");
+}
+
+static async Task HandleSynchronizeTime(NetworkClient client, TimeSpan clockOffset)
+{
+    var requestSentAtClientClock = TimeSynchronizer.ApplyOffset(DateTime.UtcNow, clockOffset);
+    var trueSendInstant = DateTime.UtcNow;
+
+    var response = await client.SendAsync("GetServerTime", new GetServerTimeRequestDto());
+
+    var trueReceiveInstant = DateTime.UtcNow;
+    var rtt = trueReceiveInstant - trueSendInstant;
+
+    if (!response.Success || response.Data is null)
+    {
+        Console.WriteLine($"Ошибка синхронизации времени: {response.Error?.Message}");
+        return;
+    }
+
+    var result = response.Data.Value.Deserialize<GetServerTimeResponseDto>(JsonDefaults.Options);
+    if (result is null)
+    {
+        Console.WriteLine("Ошибка обработки ответа сервера: пустые данные времени");
+        return;
+    }
+
+    var offset = TimeSynchronizer.CalculateOffset(result.ServerTimeUtc, requestSentAtClientClock, rtt);
+    var correctedNow = TimeSynchronizer.ApplyOffset(TimeSynchronizer.ApplyOffset(DateTime.UtcNow, clockOffset), offset);
+
+    Console.WriteLine($"Локальное время клиента (до синхронизации): {requestSentAtClientClock:HH:mm:ss.fff}");
+    Console.WriteLine($"Время сервера: {result.ServerTimeUtc:HH:mm:ss.fff}");
+    Console.WriteLine($"RTT: {rtt.TotalMilliseconds:F0} ms (оценка задержки RTT/2 = {rtt.TotalMilliseconds / 2:F0} ms)");
+    Console.WriteLine($"Вычисленная поправка (offset): {offset.TotalMilliseconds:F0} ms");
+    Console.WriteLine($"Скорректированное время клиента: {correctedNow:HH:mm:ss.fff}");
 }
 
 static async Task HandleGetEvents(NetworkClient client)

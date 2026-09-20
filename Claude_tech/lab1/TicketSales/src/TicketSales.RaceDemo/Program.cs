@@ -43,7 +43,8 @@ IOperationHandler[] handlers =
     new GetEventsHandler(service),
     new ReserveSeatHandler(service),
     new BuyTicketHandler(service),
-    new CancelTicketHandler(service)
+    new CancelTicketHandler(service),
+    new GetServerTimeHandler(service)
 };
 
 var dispatcher = new OperationDispatcher(handlers);

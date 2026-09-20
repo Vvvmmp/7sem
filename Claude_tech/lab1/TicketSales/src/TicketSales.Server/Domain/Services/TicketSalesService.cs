@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Storage;
@@ -15,19 +16,26 @@ public class TicketSalesService : ITicketSalesService
     private readonly ITicketRepository _ticketRepository;
     private readonly ICustomerRepository _customerRepository;
     private readonly IPaymentRepository _paymentRepository;
+    private readonly TimeSpan _serverTimeArtificialDelay;
+    private readonly TimeSpan _reservationDelay;
+    private readonly object _seatLock = new();
 
     public TicketSalesService(
         IEventRepository eventRepository,
         ISeatRepository seatRepository,
         ITicketRepository ticketRepository,
         ICustomerRepository customerRepository,
-        IPaymentRepository paymentRepository)
+        IPaymentRepository paymentRepository,
+        TimeSpan serverTimeArtificialDelay = default,
+        TimeSpan reservationDelay = default)
     {
         _eventRepository = eventRepository;
         _seatRepository = seatRepository;
         _ticketRepository = ticketRepository;
         _customerRepository = customerRepository;
         _paymentRepository = paymentRepository;
+        _serverTimeArtificialDelay = serverTimeArtificialDelay;
+        _reservationDelay = reservationDelay;
     }
 
     public Task<GetEventsResponseDto> GetEvents(GetEventsRequestDto request)
@@ -57,7 +65,7 @@ public class TicketSalesService : ITicketSalesService
         return Task.FromResult(result);
     }
 
-    public async Task<ReserveSeatResponseDto> ReserveSeat(ReserveSeatRequestDto request)
+    public Task<ReserveSeatResponseDto> ReserveSeat(ReserveSeatRequestDto request)
     {
         if (request.EventId <= 0 || request.SeatId <= 0)
         {
@@ -85,16 +93,8 @@ public class TicketSalesService : ITicketSalesService
             throw new ValidationException("Указанное место не принадлежит указанному событию");
         }
 
-        // start
-        Log($"ReserveSeat: seat={seat.Id} проверка статуса -> {seat.Status}");
-
-        if (seat.Status != SeatStatus.Free)
-        {
-            throw new ValidationException("Место уже занято");
-        }
-
-       // await Task.Delay(5000);
-
+        // Поиск/создание покупателя не относится к общему ресурсу (месту) и не должен
+        // сериализоваться вместе с ним — выполняется до входа в критическую секцию.
         var customer = _customerRepository.FindByEmail(request.CustomerEmail);
         if (customer is null)
         {
@@ -105,21 +105,41 @@ public class TicketSalesService : ITicketSalesService
             });
         }
 
-        seat.Status = SeatStatus.Reserved;
-        _seatRepository.Update(seat);
-        Log($"ReserveSeat: seat={seat.Id} записан статус -> {seat.Status} (customer={customer.Email})");
-        // end
-
-        var ticket = _ticketRepository.Add(new Ticket
+        Ticket ticket;
+        lock (_seatLock)
         {
-            EventId = eventEntity.Id,
-            SeatId = seat.Id,
-            CustomerId = customer.Id,
-            Status = TicketStatus.Reserved,
-            CreatedAt = DateTime.UtcNow
-        });
+            Log($"ReserveSeat: seat={seat.Id} LOCK");
+            Log($"ReserveSeat: seat={seat.Id} проверка статуса -> {seat.Status}");
 
-        return new ReserveSeatResponseDto
+            if (_reservationDelay > TimeSpan.Zero)
+            {
+                Thread.Sleep(_reservationDelay);
+            }
+
+            if (seat.Status != SeatStatus.Free)
+            {
+                Log($"ReserveSeat: seat={seat.Id} FAIL (уже занято)");
+                Log($"ReserveSeat: seat={seat.Id} UNLOCK");
+                throw new ValidationException("Место уже занято");
+            }
+
+            seat.Status = SeatStatus.Reserved;
+            _seatRepository.Update(seat);
+
+            ticket = _ticketRepository.Add(new Ticket
+            {
+                EventId = eventEntity.Id,
+                SeatId = seat.Id,
+                CustomerId = customer.Id,
+                Status = TicketStatus.Reserved,
+                CreatedAt = DateTime.UtcNow
+            });
+
+            Log($"ReserveSeat: seat={seat.Id} SUCCESS (customer={customer.Email}, ticketId={ticket.Id})");
+            Log($"ReserveSeat: seat={seat.Id} UNLOCK");
+        }
+
+        return Task.FromResult(new ReserveSeatResponseDto
         {
             TicketId = ticket.Id,
             Seat = new SeatDto
@@ -129,7 +149,17 @@ public class TicketSalesService : ITicketSalesService
                 Number = seat.Number,
                 Status = seat.Status
             }
-        };
+        });
+    }
+
+    public async Task<GetServerTimeResponseDto> GetServerTime()
+    {
+        if (_serverTimeArtificialDelay > TimeSpan.Zero)
+        {
+            await Task.Delay(_serverTimeArtificialDelay);
+        }
+
+        return new GetServerTimeResponseDto { ServerTimeUtc = DateTime.UtcNow };
     }
 
     private static void Log(string message)
@@ -159,11 +189,16 @@ public class TicketSalesService : ITicketSalesService
         var seat = _seatRepository.GetById(ticket.SeatId)
             ?? throw new NotFoundException("Место для билета не найдено");
 
-        seat.Status = SeatStatus.Sold;
-        _seatRepository.Update(seat);
+        lock (_seatLock)
+        {
+            Log($"BuyTicket: seat={seat.Id} LOCK");
+            seat.Status = SeatStatus.Sold;
+            _seatRepository.Update(seat);
 
-        ticket.Status = TicketStatus.Purchased;
-        _ticketRepository.Update(ticket);
+            ticket.Status = TicketStatus.Purchased;
+            _ticketRepository.Update(ticket);
+            Log($"BuyTicket: seat={seat.Id} SUCCESS, UNLOCK");
+        }
 
         var payment = _paymentRepository.Add(new Payment
         {
@@ -198,14 +233,19 @@ public class TicketSalesService : ITicketSalesService
         }
 
         var seat = _seatRepository.GetById(ticket.SeatId);
-        if (seat is not null)
+        lock (_seatLock)
         {
-            seat.Status = SeatStatus.Free;
-            _seatRepository.Update(seat);
-        }
+            Log($"CancelTicket: ticket={ticket.Id} LOCK");
+            if (seat is not null)
+            {
+                seat.Status = SeatStatus.Free;
+                _seatRepository.Update(seat);
+            }
 
-        ticket.Status = TicketStatus.Cancelled;
-        _ticketRepository.Update(ticket);
+            ticket.Status = TicketStatus.Cancelled;
+            _ticketRepository.Update(ticket);
+            Log($"CancelTicket: ticket={ticket.Id} SUCCESS, UNLOCK");
+        }
 
         return Task.FromResult(new CancelTicketResponseDto
         {

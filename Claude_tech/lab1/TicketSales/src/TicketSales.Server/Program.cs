@@ -14,6 +14,12 @@ if (args.Length > 0 && int.TryParse(args[0], out var parsedPort))
     port = parsedPort;
 }
 
+var serverTimeDelayMs = 0;
+if (args.Length > 1 && int.TryParse(args[1], out var parsedDelay))
+{
+    serverTimeDelayMs = parsedDelay;
+}
+
 var eventRepository = new InMemoryEventRepository();
 var seatRepository = new InMemorySeatRepository();
 var ticketRepository = new InMemoryTicketRepository();
@@ -27,14 +33,16 @@ var service = new TicketSalesService(
     seatRepository,
     ticketRepository,
     customerRepository,
-    paymentRepository);
+    paymentRepository,
+    TimeSpan.FromMilliseconds(serverTimeDelayMs));
 
 IOperationHandler[] handlers =
 {
     new GetEventsHandler(service),
     new ReserveSeatHandler(service),
     new BuyTicketHandler(service),
-    new CancelTicketHandler(service)
+    new CancelTicketHandler(service),
+    new GetServerTimeHandler(service)
 };
 
 var dispatcher = new OperationDispatcher(handlers);
