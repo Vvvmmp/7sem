@@ -1,9 +1,10 @@
 using System.Text.Json;
+using System.Threading.Tasks;
 
 namespace TicketSales.Server.Dispatching;
 
 public interface IOperationHandler
 {
     string OperationName { get; }
-    object Handle(JsonElement payload);
+    Task<object> HandleAsync(JsonElement payload);
 }

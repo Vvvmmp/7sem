@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Tasks;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Domain.Services;
 using TicketSales.Shared.Dto;
@@ -17,11 +18,11 @@ public class ReserveSeatHandler : IOperationHandler
 
     public string OperationName => "ReserveSeat";
 
-    public object Handle(JsonElement payload)
+    public async Task<object> HandleAsync(JsonElement payload)
     {
         var request = payload.Deserialize<ReserveSeatRequestDto>(JsonDefaults.Options)
             ?? throw new ValidationException("Отсутствуют данные для бронирования места");
 
-        return _service.ReserveSeat(request);
+        return await _service.ReserveSeat(request);
     }
 }

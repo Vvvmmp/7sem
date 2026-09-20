@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Threading.Tasks;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Shared.Protocol;
 
@@ -16,7 +17,7 @@ public class OperationDispatcher
         _handlers = handlers.ToDictionary(h => h.OperationName, StringComparer.OrdinalIgnoreCase);
     }
 
-    public Response Dispatch(Request request)
+    public async Task<Response> DispatchAsync(Request request)
     {
         if (string.IsNullOrWhiteSpace(request.Operation) || !_handlers.TryGetValue(request.Operation, out var handler))
         {
@@ -25,7 +26,7 @@ public class OperationDispatcher
 
         try
         {
-            var result = handler.Handle(request.Payload);
+            var result = await handler.HandleAsync(request.Payload);
             return Response.Ok(request.RequestId, result);
         }
         catch (DomainException ex)

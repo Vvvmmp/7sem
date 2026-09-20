@@ -53,9 +53,16 @@ public class ClientSession
             try
             {
                 var request = JsonSerializer.Deserialize<Request>(line, JsonDefaults.Options);
-                response = request is null
-                    ? Response.Fail(string.Empty, ErrorCodes.ValidationError, "Пустой запрос")
-                    : _dispatcher.Dispatch(request);
+                if (request is null)
+                {
+                    response = Response.Fail(string.Empty, ErrorCodes.ValidationError, "Пустой запрос");
+                }
+                else
+                {
+                    Log($"-> {request.Operation} (requestId={request.RequestId}) начало обработки");
+                    response = await _dispatcher.DispatchAsync(request);
+                    Log($"<- {request.Operation} (requestId={request.RequestId}) обработка завершена, success={response.Success}");
+                }
             }
             catch (JsonException)
             {
@@ -71,5 +78,11 @@ public class ClientSession
                 break;
             }
         }
+    }
+
+    private static void Log(string message)
+    {
+        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        Console.WriteLine($"[{timestamp}] [Thread {Environment.CurrentManagedThreadId}] {message}");
     }
 }

@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Storage;
 using TicketSales.Shared.Dto;
@@ -29,7 +30,7 @@ public class TicketSalesService : ITicketSalesService
         _paymentRepository = paymentRepository;
     }
 
-    public GetEventsResponseDto GetEvents(GetEventsRequestDto request)
+    public Task<GetEventsResponseDto> GetEvents(GetEventsRequestDto request)
     {
         var events = _eventRepository.GetAll().AsEnumerable();
 
@@ -53,10 +54,10 @@ public class TicketSalesService : ITicketSalesService
             });
         }
 
-        return result;
+        return Task.FromResult(result);
     }
 
-    public ReserveSeatResponseDto ReserveSeat(ReserveSeatRequestDto request)
+    public async Task<ReserveSeatResponseDto> ReserveSeat(ReserveSeatRequestDto request)
     {
         if (request.EventId <= 0 || request.SeatId <= 0)
         {
@@ -84,10 +85,15 @@ public class TicketSalesService : ITicketSalesService
             throw new ValidationException("Указанное место не принадлежит указанному событию");
         }
 
+        // start
+        Log($"ReserveSeat: seat={seat.Id} проверка статуса -> {seat.Status}");
+
         if (seat.Status != SeatStatus.Free)
         {
             throw new ValidationException("Место уже занято");
         }
+
+       // await Task.Delay(5000);
 
         var customer = _customerRepository.FindByEmail(request.CustomerEmail);
         if (customer is null)
@@ -101,6 +107,8 @@ public class TicketSalesService : ITicketSalesService
 
         seat.Status = SeatStatus.Reserved;
         _seatRepository.Update(seat);
+        Log($"ReserveSeat: seat={seat.Id} записан статус -> {seat.Status} (customer={customer.Email})");
+        // end
 
         var ticket = _ticketRepository.Add(new Ticket
         {
@@ -124,7 +132,13 @@ public class TicketSalesService : ITicketSalesService
         };
     }
 
-    public BuyTicketResponseDto BuyTicket(BuyTicketRequestDto request)
+    private static void Log(string message)
+    {
+        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
+        Console.WriteLine($"[{timestamp}] [Thread {Environment.CurrentManagedThreadId}] {message}");
+    }
+
+    public Task<BuyTicketResponseDto> BuyTicket(BuyTicketRequestDto request)
     {
         if (request.TicketId <= 0)
         {
@@ -159,16 +173,16 @@ public class TicketSalesService : ITicketSalesService
             CreatedAt = DateTime.UtcNow
         });
 
-        return new BuyTicketResponseDto
+        return Task.FromResult(new BuyTicketResponseDto
         {
             TicketId = ticket.Id,
             PaymentId = payment.Id,
             Amount = payment.Amount,
             Status = payment.Status
-        };
+        });
     }
 
-    public CancelTicketResponseDto CancelTicket(CancelTicketRequestDto request)
+    public Task<CancelTicketResponseDto> CancelTicket(CancelTicketRequestDto request)
     {
         if (request.TicketId <= 0)
         {
@@ -193,10 +207,10 @@ public class TicketSalesService : ITicketSalesService
         ticket.Status = TicketStatus.Cancelled;
         _ticketRepository.Update(ticket);
 
-        return new CancelTicketResponseDto
+        return Task.FromResult(new CancelTicketResponseDto
         {
             TicketId = ticket.Id,
             Status = ticket.Status
-        };
+        });
     }
 }

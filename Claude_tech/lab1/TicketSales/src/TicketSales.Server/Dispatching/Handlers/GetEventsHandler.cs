@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Threading.Tasks;
 using TicketSales.Server.Domain.Services;
 using TicketSales.Shared.Dto;
 using TicketSales.Shared.Protocol;
@@ -16,12 +17,12 @@ public class GetEventsHandler : IOperationHandler
 
     public string OperationName => "GetEvents";
 
-    public object Handle(JsonElement payload)
+    public async Task<object> HandleAsync(JsonElement payload)
     {
         var request = payload.ValueKind == JsonValueKind.Object
             ? payload.Deserialize<GetEventsRequestDto>(JsonDefaults.Options) ?? new GetEventsRequestDto()
             : new GetEventsRequestDto();
 
-        return _service.GetEvents(request);
+        return await _service.GetEvents(request);
     }
 }
