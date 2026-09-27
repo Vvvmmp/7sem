@@ -10,4 +10,5 @@ public interface ITicketSalesService
     Task<BuyTicketResponseDto> BuyTicket(BuyTicketRequestDto request);
     Task<CancelTicketResponseDto> CancelTicket(CancelTicketRequestDto request);
     Task<GetServerTimeResponseDto> GetServerTime();
+    Task<GetSeatSnapshotResponseDto> GetSeatSnapshot(GetSeatSnapshotRequestDto request);
 }

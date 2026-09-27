@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: ticketsales-postgres
+    environment:
+      POSTGRES_DB: ticketsales
+      POSTGRES_USER: ticketsales
+      POSTGRES_PASSWORD: ticketsales
+    ports:
+      - "5433:5432"
+    volumes:
+      - ticketsales-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  ticketsales-postgres-data:

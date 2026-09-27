@@ -20,4 +20,8 @@
     <ProjectReference Include="..\..\src\TicketSales.Client\TicketSales.Client.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

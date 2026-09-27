@@ -171,6 +171,20 @@ public class TicketSalesServiceSemaphore : ITicketSalesService
         return new GetServerTimeResponseDto { ServerTimeUtc = DateTime.UtcNow };
     }
 
+    public Task<GetSeatSnapshotResponseDto> GetSeatSnapshot(GetSeatSnapshotRequestDto request)
+    {
+        var seat = _seatRepository.GetById(request.SeatId)
+            ?? throw new NotFoundException("Место не найдено");
+
+        var ticketCount = _ticketRepository.GetAll().Count(t => t.SeatId == request.SeatId);
+
+        return Task.FromResult(new GetSeatSnapshotResponseDto
+        {
+            Status = seat.Status,
+            TicketCount = ticketCount
+        });
+    }
+
     private static void Log(string message)
     {
         var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");

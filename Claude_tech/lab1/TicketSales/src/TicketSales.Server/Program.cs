@@ -6,7 +6,7 @@ using TicketSales.Server.Dispatching;
 using TicketSales.Server.Dispatching.Handlers;
 using TicketSales.Server.Domain.Services;
 using TicketSales.Server.Networking;
-using TicketSales.Server.Storage.InMemory;
+using TicketSales.Server.Storage.Postgres;
 
 var port = 5050;
 if (args.Length > 0 && int.TryParse(args[0], out var parsedPort))
@@ -20,20 +20,38 @@ if (args.Length > 1 && int.TryParse(args[1], out var parsedDelay))
     serverTimeDelayMs = parsedDelay;
 }
 
-var eventRepository = new InMemoryEventRepository();
-var seatRepository = new InMemorySeatRepository();
-var ticketRepository = new InMemoryTicketRepository();
-var customerRepository = new InMemoryCustomerRepository();
-var paymentRepository = new InMemoryPaymentRepository();
+var connectionString = args.Length > 2
+    ? args[2]
+    : "Host=localhost;Port=5433;Database=ticketsales;Username=ticketsales;Password=ticketsales";
 
-SeedData.Populate(eventRepository, seatRepository);
+var connectionFactory = new PostgresConnectionFactory(connectionString);
 
-var service = new TicketSalesService(
+try
+{
+    using var probe = connectionFactory.Open();
+}
+catch (Exception ex)
+{
+    Console.WriteLine($"Не удалось подключиться к базе данных: {ex.Message}");
+    Console.WriteLine("Убедитесь, что запущен docker compose (docker compose up -d) и БД доступна.");
+    return;
+}
+
+PostgresSchemaInitializer.EnsureCreatedAndSeeded(connectionFactory);
+
+var eventRepository = new PostgresEventRepository(connectionFactory);
+var seatRepository = new PostgresSeatRepository(connectionFactory);
+var ticketRepository = new PostgresTicketRepository(connectionFactory);
+var customerRepository = new PostgresCustomerRepository(connectionFactory);
+var paymentRepository = new PostgresPaymentRepository(connectionFactory);
+
+var service = new TicketSalesServicePostgres(
     eventRepository,
     seatRepository,
     ticketRepository,
     customerRepository,
     paymentRepository,
+    connectionFactory,
     TimeSpan.FromMilliseconds(serverTimeDelayMs));
 
 IOperationHandler[] handlers =
@@ -42,7 +60,8 @@ IOperationHandler[] handlers =
     new ReserveSeatHandler(service),
     new BuyTicketHandler(service),
     new CancelTicketHandler(service),
-    new GetServerTimeHandler(service)
+    new GetServerTimeHandler(service),
+    new GetSeatSnapshotHandler(service)
 };
 
 var dispatcher = new OperationDispatcher(handlers);
