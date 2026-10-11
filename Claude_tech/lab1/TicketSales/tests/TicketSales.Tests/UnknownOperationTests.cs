@@ -5,11 +5,11 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-public class UnknownOperationTests : IClassFixture<TestServerFixture>
+public class UnknownOperationTests : IClassFixture<PostgresTestServerFixture>
 {
-    private readonly TestServerFixture _fixture;
+    private readonly PostgresTestServerFixture _fixture;
 
-    public UnknownOperationTests(TestServerFixture fixture)
+    public UnknownOperationTests(PostgresTestServerFixture fixture)
     {
         _fixture = fixture;
     }

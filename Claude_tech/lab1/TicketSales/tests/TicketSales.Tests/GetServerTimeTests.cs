@@ -8,11 +8,11 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-public class GetServerTimeTests : IClassFixture<TestServerFixture>
+public class GetServerTimeTests : IClassFixture<PostgresTestServerFixture>
 {
-    private readonly TestServerFixture _fixture;
+    private readonly PostgresTestServerFixture _fixture;
 
-    public GetServerTimeTests(TestServerFixture fixture)
+    public GetServerTimeTests(PostgresTestServerFixture fixture)
     {
         _fixture = fixture;
     }

@@ -72,7 +72,16 @@ public static class PostgresSchemaInitializer
         }
     }
 
-    /// <summary>Used only by the test suite and TransactionDemo, for a clean/repeatable starting state.</summary>
+    /// <summary>Только схема, без начальных данных: Replica получает данные копированием из Primary.</summary>
+    public static void EnsureCreated(PostgresConnectionFactory factory)
+    {
+        using var connection = factory.Open();
+        using var create = connection.CreateCommand();
+        create.CommandText = CreateTablesSql;
+        create.ExecuteNonQuery();
+    }
+
+    /// <summary>Used only by the test suite and ReplicationDemo, for a clean/repeatable starting state.</summary>
     public static void ResetAndSeed(PostgresConnectionFactory factory)
     {
         using var connection = factory.Open();

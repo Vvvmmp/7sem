@@ -71,6 +71,15 @@ while (running)
                 await HandleSynchronizeTime(client, clockOffset);
                 break;
             case "7":
+                await HandleReplicationStatus(client);
+                break;
+            case "8":
+                await HandleSetInstanceAvailability(client);
+                break;
+            case "9":
+                await HandleSynchronizeInstances(client);
+                break;
+            case "0":
                 running = false;
                 break;
             default:
@@ -97,7 +106,10 @@ static void PrintMenu()
     Console.WriteLine("4. Отменить билет");
     Console.WriteLine("5. Показать локальное время (с учетом смещения)");
     Console.WriteLine("6. Синхронизировать время с сервером");
-    Console.WriteLine("7. Выход");
+    Console.WriteLine("7. Состояние Primary / Replica");
+    Console.WriteLine("8. Смоделировать отказ / восстановление экземпляра");
+    Console.WriteLine("9. Синхронизировать Primary и Replica");
+    Console.WriteLine("0. Выход");
     Console.Write("Выберите пункт: ");
 }
 
@@ -143,6 +155,7 @@ static async Task HandleSynchronizeTime(NetworkClient client, TimeSpan clockOffs
 static async Task HandleGetEvents(NetworkClient client)
 {
     var response = await client.SendAsync("GetEvents", new GetEventsRequestDto());
+    PrintDataInstance(response);
     if (!response.Success || response.Data is null)
     {
         Console.WriteLine($"Ошибка: {response.Error?.Message}");
@@ -183,6 +196,7 @@ static async Task HandleReserveSeat(NetworkClient client)
         CustomerFullName = fullName,
         CustomerEmail = email
     });
+    PrintDataInstance(response);
 
     if (!response.Success || response.Data is null)
     {
@@ -200,6 +214,7 @@ static async Task HandleBuyTicket(NetworkClient client)
     var ticketId = int.Parse(Console.ReadLine() ?? string.Empty);
 
     var response = await client.SendAsync("BuyTicket", new BuyTicketRequestDto { TicketId = ticketId });
+    PrintDataInstance(response);
 
     if (!response.Success || response.Data is null)
     {
@@ -217,6 +232,7 @@ static async Task HandleCancelTicket(NetworkClient client)
     var ticketId = int.Parse(Console.ReadLine() ?? string.Empty);
 
     var response = await client.SendAsync("CancelTicket", new CancelTicketRequestDto { TicketId = ticketId });
+    PrintDataInstance(response);
 
     if (!response.Success || response.Data is null)
     {
@@ -226,4 +242,114 @@ static async Task HandleCancelTicket(NetworkClient client)
 
     var result = response.Data.Value.Deserialize<CancelTicketResponseDto>(JsonDefaults.Options);
     Console.WriteLine($"Билет {result?.TicketId} переведен в статус {result?.Status}");
+}
+
+static void PrintDataInstance(Response response)
+{
+    if (response.DataInstance is not null)
+    {
+        Console.WriteLine($"[Экземпляр данных: {response.DataInstance}]");
+    }
+}
+
+static async Task HandleReplicationStatus(NetworkClient client)
+{
+    Console.Write("Id места для сравнения на Primary и Replica (Enter — пропустить): ");
+    var seatInput = Console.ReadLine();
+    int? seatId = int.TryParse(seatInput, out var parsedSeatId) ? parsedSeatId : null;
+
+    var response = await client.SendAsync("GetReplicationStatus", new GetReplicationStatusRequestDto { SeatId = seatId });
+    if (!response.Success || response.Data is null)
+    {
+        Console.WriteLine($"Ошибка: {response.Error?.Message}");
+        return;
+    }
+
+    PrintReplicationStatus(response.Data.Value.Deserialize<ReplicationStatusDto>(JsonDefaults.Options)!);
+}
+
+static async Task HandleSetInstanceAvailability(NetworkClient client)
+{
+    Console.Write("Экземпляр (Primary / Replica): ");
+    var instance = (Console.ReadLine() ?? string.Empty).Trim();
+
+    Console.Write("1 — смоделировать отказ, 2 — восстановить: ");
+    var available = (Console.ReadLine() ?? string.Empty).Trim() == "2";
+
+    var response = await client.SendAsync("SetInstanceAvailability", new SetInstanceAvailabilityRequestDto
+    {
+        Instance = instance,
+        Available = available
+    });
+
+    if (!response.Success || response.Data is null)
+    {
+        Console.WriteLine($"Ошибка: {response.Error?.Message}");
+        return;
+    }
+
+    PrintReplicationStatus(response.Data.Value.Deserialize<ReplicationStatusDto>(JsonDefaults.Options)!);
+}
+
+static async Task HandleSynchronizeInstances(NetworkClient client)
+{
+    var response = await client.SendAsync("SynchronizeInstances", new SynchronizeInstancesRequestDto());
+    if (!response.Success || response.Data is null)
+    {
+        Console.WriteLine($"Ошибка: {response.Error?.Message}");
+        return;
+    }
+
+    var result = response.Data.Value.Deserialize<SynchronizeInstancesResponseDto>(JsonDefaults.Options)!;
+    if (result.Source is null)
+    {
+        Console.WriteLine("Синхронизация не потребовалась: Primary = Replica");
+        return;
+    }
+
+    Console.WriteLine($"Синхронизация {result.Source} → {result.Target} выполнена");
+    Console.WriteLine("Расхождения до синхронизации:");
+    foreach (var difference in result.DifferencesBefore)
+    {
+        Console.WriteLine($"  - {difference}");
+    }
+
+    Console.WriteLine(result.ConsistentAfter ? "После синхронизации: Primary = Replica" : "После синхронизации копии отличаются!");
+}
+
+static void PrintReplicationStatus(ReplicationStatusDto status)
+{
+    foreach (var instance in new[] { status.Primary, status.Replica })
+    {
+        var line = $"{instance.Name}: {instance.State.ToString().ToUpperInvariant()}";
+        if (instance.SeatStatus is not null)
+        {
+            line += $" | место: {instance.SeatStatus}";
+        }
+
+        if (instance.FreeSeats is not null)
+        {
+            line += $" | свободно мест: {instance.FreeSeats} | билетов: {instance.TicketCount}";
+        }
+
+        if (instance.NeedsSync)
+        {
+            line += " | требует синхронизации";
+        }
+
+        Console.WriteLine(line);
+    }
+
+    Console.WriteLine($"Активный экземпляр: {status.ActiveInstance ?? "нет (оба недоступны)"}");
+    Console.WriteLine(status.Consistent switch
+    {
+        true => "Согласованность: Primary = Replica",
+        false => "Согласованность: ЕСТЬ РАСХОЖДЕНИЯ",
+        null => "Согласованность: не проверить (экземпляр недоступен)"
+    });
+
+    foreach (var difference in status.Differences)
+    {
+        Console.WriteLine($"  - {difference}");
+    }
 }

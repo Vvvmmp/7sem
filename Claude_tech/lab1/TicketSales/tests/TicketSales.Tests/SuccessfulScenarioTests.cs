@@ -1,7 +1,6 @@
 using System.Threading.Tasks;
 using System.Text.Json;
 using TicketSales.Client;
-using TicketSales.Server.Storage.InMemory;
 using TicketSales.Shared.Dto;
 using TicketSales.Shared.Models;
 using TicketSales.Shared.Protocol;
@@ -9,11 +8,11 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-public class SuccessfulScenarioTests : IClassFixture<TestServerFixture>
+public class SuccessfulScenarioTests : IClassFixture<PostgresTestServerFixture>
 {
-    private readonly TestServerFixture _fixture;
+    private readonly PostgresTestServerFixture _fixture;
 
-    public SuccessfulScenarioTests(TestServerFixture fixture)
+    public SuccessfulScenarioTests(PostgresTestServerFixture fixture)
     {
         _fixture = fixture;
     }
@@ -29,8 +28,8 @@ public class SuccessfulScenarioTests : IClassFixture<TestServerFixture>
 
         var reserveResponse = await client.SendAsync("ReserveSeat", new ReserveSeatRequestDto
         {
-            EventId = SeedData.FirstEventId,
-            SeatId = SeedData.FirstEventFirstSeatId,
+            EventId = 1,
+            SeatId = 1,
             CustomerFullName = "Иван Иванов",
             CustomerEmail = "ivan@example.com"
         });

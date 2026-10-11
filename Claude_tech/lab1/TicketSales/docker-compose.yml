@@ -1,7 +1,7 @@
 services:
-  postgres:
+  postgres-primary:
     image: postgres:17-alpine
-    container_name: ticketsales-postgres
+    container_name: ticketsales-primary
     environment:
       POSTGRES_DB: ticketsales
       POSTGRES_USER: ticketsales
@@ -9,7 +9,20 @@ services:
     ports:
       - "5433:5432"
     volumes:
-      - ticketsales-postgres-data:/var/lib/postgresql/data
+      - ticketsales-primary-data:/var/lib/postgresql/data
+
+  postgres-replica:
+    image: postgres:17-alpine
+    container_name: ticketsales-replica
+    environment:
+      POSTGRES_DB: ticketsales
+      POSTGRES_USER: ticketsales
+      POSTGRES_PASSWORD: ticketsales
+    ports:
+      - "5434:5432"
+    volumes:
+      - ticketsales-replica-data:/var/lib/postgresql/data
 
 volumes:
-  ticketsales-postgres-data:
+  ticketsales-primary-data:
+  ticketsales-replica-data:

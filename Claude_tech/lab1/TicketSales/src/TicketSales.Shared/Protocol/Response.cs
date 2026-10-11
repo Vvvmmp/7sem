@@ -9,6 +9,9 @@ public class Response
     public JsonElement? Data { get; set; }
     public ErrorInfo? Error { get; set; }
 
+    /// <summary>Экземпляр данных (Primary / Replica), через который сервер обработал запрос.</summary>
+    public string? DataInstance { get; set; }
+
     public static Response Ok(string requestId, object? data)
     {
         return new Response

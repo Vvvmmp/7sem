@@ -6,19 +6,24 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using TicketSales.Server.Dispatching;
+using TicketSales.Server.Replication;
 using TicketSales.Shared.Protocol;
 
 namespace TicketSales.Server.Networking;
 
 public class ClientSession
 {
+    private static int _clientCounter;
+
     private readonly TcpClient _client;
     private readonly OperationDispatcher _dispatcher;
+    private readonly string _clientId;
 
     public ClientSession(TcpClient client, OperationDispatcher dispatcher)
     {
         _client = client;
         _dispatcher = dispatcher;
+        _clientId = $"Client {Interlocked.Increment(ref _clientCounter)}";
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -59,9 +64,19 @@ public class ClientSession
                 }
                 else
                 {
-                    Log($"-> {request.Operation} (requestId={request.RequestId}) начало обработки");
+                    var context = new RequestContext(_clientId);
+                    RequestContext.Current = context;
+
+                    ReplicationLog.Write($"Request received: {request.Operation} (requestId={request.RequestId})");
                     response = await _dispatcher.DispatchAsync(request);
-                    Log($"<- {request.Operation} (requestId={request.RequestId}) обработка завершена, success={response.Success}");
+                    response.DataInstance = context.DataInstance;
+
+                    var instanceInfo = context.DataInstance is null ? string.Empty : $" (экземпляр: {context.DataInstance})";
+                    ReplicationLog.Write(response.Success
+                        ? $"Request → SUCCESS{instanceInfo}"
+                        : $"Request → FAIL{instanceInfo}: {response.Error?.Code} {response.Error?.Message}");
+
+                    RequestContext.Current = null;
                 }
             }
             catch (JsonException)
@@ -78,11 +93,5 @@ public class ClientSession
                 break;
             }
         }
-    }
-
-    private static void Log(string message)
-    {
-        var timestamp = DateTime.Now.ToString("HH:mm:ss.fff");
-        Console.WriteLine($"[{timestamp}] [Thread {Environment.CurrentManagedThreadId}] {message}");
     }
 }

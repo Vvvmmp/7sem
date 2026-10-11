@@ -6,11 +6,11 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-public class InvalidDataTests : IClassFixture<TestServerFixture>
+public class InvalidDataTests : IClassFixture<PostgresTestServerFixture>
 {
-    private readonly TestServerFixture _fixture;
+    private readonly PostgresTestServerFixture _fixture;
 
-    public InvalidDataTests(TestServerFixture fixture)
+    public InvalidDataTests(PostgresTestServerFixture fixture)
     {
         _fixture = fixture;
     }
