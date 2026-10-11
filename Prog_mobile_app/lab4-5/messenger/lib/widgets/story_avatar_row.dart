@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/models/story.dart';
+import '../screens/story_viewer_screen.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_dimens.dart';
 import '../theme/app_text_styles.dart';
@@ -22,7 +23,20 @@ class StoryAvatarRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 16),
         itemCount: stories.length,
         separatorBuilder: (_, _) => const SizedBox(width: 12),
-        itemBuilder: (_, index) => _StoryAvatarItem(item: stories[index]),
+        itemBuilder: (context, index) {
+          final item = stories[index];
+          if (item.isAddStory) return _StoryAvatarItem(item: item);
+          final viewable = stories.where((s) => !s.isAddStory).toList();
+          return GestureDetector(
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => StoryViewerScreen(stories: viewable, initialIndex: viewable.indexOf(item)),
+              ),
+            ),
+            child: _StoryAvatarItem(item: item),
+          );
+        },
       ),
     );
   }

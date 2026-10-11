@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../data/models/user_profile.dart';
 import '../data/sample_data.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
@@ -7,7 +8,9 @@ import '../widgets/post_card.dart';
 import '../widgets/story_avatar_row.dart';
 
 class ProfileScreen extends StatelessWidget {
-  const ProfileScreen({super.key});
+  const ProfileScreen({super.key, required this.profile});
+
+  final UserProfile profile;
 
   @override
   Widget build(BuildContext context) {
@@ -43,7 +46,7 @@ class ProfileScreen extends StatelessWidget {
                         onPressed: () => Navigator.pop(context),
                       ),
                       const SizedBox(width: 4),
-                      Text('Darlene', style: AppTextStyles.nameDropdown),
+                      Text(profile.name.split(' ').first, style: AppTextStyles.nameDropdown),
                       const Icon(Icons.keyboard_arrow_down, size: 22, color: AppColors.textPrimary),
                       const Spacer(),
                       OutlinedButton(
@@ -65,11 +68,11 @@ class ProfileScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 12),
-                const CircleAvatar(radius: 60, backgroundImage: AssetImage(SampleData.profileAvatar)),
+                CircleAvatar(radius: 60, backgroundImage: AssetImage(profile.avatarAsset)),
                 const SizedBox(height: 14),
-                Text('Darlene Beats', style: AppTextStyles.profileName),
+                Text(profile.name, style: AppTextStyles.profileName),
                 const SizedBox(height: 4),
-                Text('@dw_beats', style: AppTextStyles.profileHandle),
+                Text(profile.handle, style: AppTextStyles.profileHandle),
                 const SizedBox(height: 20),
                 Container(
                   width: double.infinity,

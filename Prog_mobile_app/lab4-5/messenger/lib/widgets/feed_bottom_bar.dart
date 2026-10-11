@@ -23,13 +23,17 @@ class FeedBottomBar extends StatelessWidget {
                   BoxShadow(color: AppColors.shadowColor, blurRadius: 12, offset: Offset(0, 4)),
                 ],
               ),
-              child: const Row(
+              child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _NavIcon(Icons.home_filled, active: true),
-                  _NavIcon(Icons.search),
-                  _NavIcon(Icons.camera_alt_outlined),
-                  _NavIcon(Icons.people_outline),
+                  const _NavIcon(Icons.home_filled, active: true),
+                  const _NavIcon(Icons.search),
+                  GestureDetector(
+                    key: const Key('bottomBarDeviceButton'),
+                    onTap: () => Navigator.pushNamed(context, '/device'),
+                    child: const _NavIcon(Icons.camera_alt_outlined),
+                  ),
+                  const _NavIcon(Icons.people_outline),
                 ],
               ),
             ),
@@ -67,9 +71,6 @@ class _NavIcon extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // A fixed-height box exactly matching the icon's own size keeps the icon
-    // truly centered in the pill; the active dot is an overflow overlay below
-    // it so it never shifts the icon's vertical position.
     return SizedBox(
       height: 26,
       child: Stack(

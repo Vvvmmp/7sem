@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../data/models/post.dart';
+import '../data/models/user_profile.dart';
 import '../data/sample_data.dart';
 import '../theme/app_colors.dart';
 import '../theme/app_dimens.dart';
@@ -7,7 +9,7 @@ import '../theme/app_text_styles.dart';
 import '../widgets/feed_bottom_bar.dart';
 import '../widgets/post_card.dart';
 import '../widgets/story_avatar_row.dart';
-import 'profile_screen.dart';
+import 'post_detail_screen.dart';
 
 class FeedScreen extends StatelessWidget {
   const FeedScreen({super.key});
@@ -47,9 +49,14 @@ class FeedScreen extends StatelessWidget {
                       GestureDetector(
                         key: const Key('feedProfileAvatarButton'),
                         onTap: () {
-                          Navigator.push(
+                          Navigator.pushNamed(
                             context,
-                            MaterialPageRoute(builder: (_) => const ProfileScreen()),
+                            '/profile',
+                            arguments: const UserProfile(
+                              name: 'Darlene Beats',
+                              handle: '@dw_beats',
+                              avatarAsset: SampleData.profileAvatar,
+                            ),
                           );
                         },
                         child: const CircleAvatar(
@@ -100,7 +107,10 @@ class FeedScreen extends StatelessWidget {
                     child: ListView.builder(
                       padding: const EdgeInsets.only(top: 8, bottom: 130),
                       itemCount: SampleData.feedPosts.length,
-                      itemBuilder: (_, index) => PostCard(post: SampleData.feedPosts[index]),
+                      itemBuilder: (_, index) => GestureDetector(
+                        onTap: () => _openPost(context, SampleData.feedPosts[index]),
+                        child: PostCard(post: SampleData.feedPosts[index]),
+                      ),
                     ),
                   ),
                 ),
@@ -117,6 +127,17 @@ class FeedScreen extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _openPost(BuildContext context, PostItem post) async {
+  final liked = await Navigator.push<bool>(
+    context,
+    MaterialPageRoute(builder: (_) => PostDetailScreen(post: post)),
+  );
+  if (!context.mounted || liked == null) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(liked ? 'You liked ${post.username}\'s post' : 'No like for ${post.username}\'s post')),
+  );
 }
 
 class _IconCircleButton extends StatelessWidget {
