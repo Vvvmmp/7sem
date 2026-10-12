@@ -9,6 +9,7 @@ import '../theme/app_text_styles.dart';
 import '../widgets/feed_bottom_bar.dart';
 import '../widgets/post_card.dart';
 import '../widgets/story_avatar_row.dart';
+import 'hive_screen.dart';
 import 'messages_screen.dart';
 import 'post_detail_screen.dart';
 
@@ -48,6 +49,11 @@ class FeedScreen extends StatelessWidget {
                       GestureDetector(
                         onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesScreen())),
                         child: const _IconCircleButton(icon: Icons.chat_bubble_outline),
+                      ),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HiveScreen())),
+                        child: const _IconCircleButton(icon: Icons.storage_outlined),
                       ),
                       const Spacer(),
                       GestureDetector(

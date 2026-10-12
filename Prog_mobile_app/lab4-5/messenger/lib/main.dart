@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:path_provider/path_provider.dart';
 
+import 'data/hive_store.dart';
 import 'data/models/user_profile.dart';
 import 'screens/device_screen.dart';
 import 'screens/feed_screen.dart';
 import 'screens/profile_screen.dart';
 import 'theme/app_theme.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await HiveStore.init((await getApplicationDocumentsDirectory()).path, await HiveStore.secureKey());
   runApp(const MessengerApp());
 }
 

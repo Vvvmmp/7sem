@@ -5,16 +5,17 @@ import '../theme/app_colors.dart';
 import '../theme/app_text_styles.dart';
 
 class PostDetailScreen extends StatefulWidget {
-  const PostDetailScreen({super.key, required this.post});
+  const PostDetailScreen({super.key, required this.post, this.liked = false});
 
   final PostItem post;
+  final bool liked;
 
   @override
   State<PostDetailScreen> createState() => _PostDetailScreenState();
 }
 
 class _PostDetailScreenState extends State<PostDetailScreen> {
-  bool _liked = false;
+  late bool _liked = widget.liked;
 
   @override
   Widget build(BuildContext context) {
