@@ -9,6 +9,7 @@ import '../theme/app_text_styles.dart';
 import '../widgets/feed_bottom_bar.dart';
 import '../widgets/post_card.dart';
 import '../widgets/story_avatar_row.dart';
+import 'messages_screen.dart';
 import 'post_detail_screen.dart';
 
 class FeedScreen extends StatelessWidget {
@@ -44,7 +45,10 @@ class FeedScreen extends StatelessWidget {
                     children: [
                       const _NotificationPill(count: '3'),
                       const SizedBox(width: 10),
-                      const _IconCircleButton(icon: Icons.chat_bubble_outline),
+                      GestureDetector(
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const MessagesScreen())),
+                        child: const _IconCircleButton(icon: Icons.chat_bubble_outline),
+                      ),
                       const Spacer(),
                       GestureDetector(
                         key: const Key('feedProfileAvatarButton'),

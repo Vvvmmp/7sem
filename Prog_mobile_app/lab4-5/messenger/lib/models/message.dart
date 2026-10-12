@@ -1,13 +1,14 @@
 class Message implements Comparable<Message> {
+  final int? id;
   String _content;
   final String author;
   final bool isSystem;
   final DateTime createdAt;
 
-  Message(this.author, this._content, {DateTime? createdAt}) : isSystem = false,
+  Message(this.author, this._content, {this.id, DateTime? createdAt}) : isSystem = false,
         createdAt = createdAt ?? DateTime.now();
 
-  Message.system(this._content, {DateTime? createdAt}) : author = 'system', isSystem = true,
+  Message.system(this._content, {this.id, DateTime? createdAt}) : author = 'system', isSystem = true,
         createdAt = createdAt ?? DateTime.now();
 
   String get content => _content;
@@ -27,6 +28,7 @@ class Message implements Comparable<Message> {
   String toString() => formatted;
 
     Map<String, dynamic> toJson() => {
+        'id': id,
         'author': author,
         'content': _content,
         'isSystem': isSystem,
@@ -35,10 +37,11 @@ class Message implements Comparable<Message> {
 
   factory Message.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.parse(json['createdAt'] as String);
+    final id = json['id'] as int?;
     if (json['isSystem'] == true) {
-      return Message.system(json['content'] as String, createdAt: createdAt);
+      return Message.system(json['content'] as String, id: id, createdAt: createdAt);
     }
     return Message(json['author'] as String, json['content'] as String,
-        createdAt: createdAt);
+        id: id, createdAt: createdAt);
   }
 }
