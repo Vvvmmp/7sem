@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using TicketSales.Client;
 using TicketSales.Server.Dispatching;
 using TicketSales.Server.Networking;
+using TicketSales.Server.PubSub;
 using TicketSales.Server.Replication;
 using TicketSales.Server.Storage.Postgres;
 
@@ -36,12 +37,13 @@ public sealed class ReplicatedTestServer : IAsyncDisposable
         Replication = new ReplicationManager(primary, replica);
         Replication.Initialize();
 
-        var server = new TcpServer(IPAddress.Loopback, 0, ServerComposition.CreateDispatcher(Replication));
+        var server = new TcpServer(IPAddress.Loopback, 0, ServerComposition.CreateDispatcher(Replication, PubSub));
         Port = server.Port;
         _serverTask = server.RunAsync(_cts.Token);
     }
 
     public ReplicationManager Replication { get; }
+    public PubSubSystem PubSub { get; } = PubSubSystem.Create(0);
     public int Port { get; }
 
     public static ReplicatedTestServer Start() => new();

@@ -1,54 +1,51 @@
-# TicketSales — ЛР №5: репликация данных и отказоустойчивость
+# TicketSales — ЛР №6: взаимодействие компонентов по модели Pub/Sub
 
-Вариант 6 — **продажа билетов**. Реплицируемый ресурс — **состояние места** (`seats.status`: `Free` / `Reserved` / `Sold`),
-пример операции — **бронирование места** (`ReserveSeat`).
+Вариант 6, **продажа билетов**:
 
-Проект — продолжение ЛР №4 (PostgreSQL + lock + транзакции). В ЛР №5 данные хранятся в двух независимых
-экземплярах PostgreSQL — **Primary** и **Replica**; сервер реплицирует изменения, обнаруживает отказ Primary,
-переключается на Replica (Failover) и после восстановления синхронизирует копии (Recovery):
+| Основное событие | Дополнительные события | Subscriber |
+| --- | --- | --- |
+| `TicketPurchased` | `SeatReserved`, `TicketCancelled` | `Logger`, `SeatService`, `NotificationService` и новый `AnalyticsService` |
 
-```
-Primary → Replica → Failover → Recovery
-```
+Проект продолжает ЛР №5: клиент-сервер по TCP и PostgreSQL Primary/Replica. После успешной операции предметной области
+сервер формирует событие и передаёт его в Publisher. Publisher отправляет событие в Broker, а Broker доставляет его подписчикам.
+Промышленные брокеры (Kafka, RabbitMQ) не используются: всё написано на C#.
 
 ## Переключение между лабораторными
 
-Каждая ЛР — отдельный коммит с тегом; в дереве каждого тега лежит только то, что нужно для этой ЛР
-(демо-проекты и отчёты прошлых ЛР остались в их коммитах).
+Каждая ЛР — отдельный коммит с тегом. В дереве каждого тега лежит только то, что нужно для этой ЛР.
 
 ```bash
 git checkout claude-tech-lab1   # ЛР №1 — клиент-сервер, TCP + JSON
 git checkout claude-tech-lab2   # ЛР №2 — асинхронная обработка, Race Condition
 git checkout claude-tech-lab3   # ЛР №3 — lock / SemaphoreSlim, синхронизация времени
 git checkout claude-tech-lab4   # ЛР №4 — PostgreSQL, транзакции
-git checkout claude-tech-lab5   # ЛР №5 — репликация, Failover, Recovery (этот README)
+git checkout claude-tech-lab5   # ЛР №5 — репликация, Failover, Recovery
+git checkout claude-tech-lab6   # ЛР №6 — Pub/Sub (этот README)
 git checkout master             # вернуться к последнему состоянию
 ```
 
 ## Запуск
 
 ```bash
-docker compose up -d                                # Primary: localhost:5433, Replica: localhost:5434
-dotnet run --project src/TicketSales.Server -- 5050 # сервер
-dotnet run --project src/TicketSales.Client         # клиент (можно запустить несколько)
-dotnet run --project src/TicketSales.ReplicationDemo # полный цикл одной командой (СБРАСЫВАЕТ обе БД)
-dotnet test                                         # тесты (нужны оба контейнера)
+docker compose up -d                                 # PostgreSQL Primary :5433, Replica :5434
+dotnet run --project src/TicketSales.Server -- 5050  # сервер
+dotnet run --project src/TicketSales.Client          # клиент (можно запустить несколько)
+dotnet run --project src/TicketSales.PubSubDemo      # итоговый эксперимент одной командой (сбрасывает БД)
+dotnet test                                          # тесты
 ```
 
-Аргументы сервера: `[порт] [задержка GetServerTime, мс] [строка подключения Primary] [строка подключения Replica]`.
-
-Меню клиента (пункты ЛР №5 — 7, 8, 9):
+Меню клиента (пункты ЛР №6 — 7–11):
 
 ```
-1. Список событий                       5. Показать локальное время
-2. Забронировать место                  6. Синхронизировать время с сервером
-3. Купить билет                         7. Состояние Primary / Replica
-4. Отменить билет                       8. Смоделировать отказ / восстановление экземпляра
-                                        9. Синхронизировать Primary и Replica
-0. Выход
+1. Список событий           7. Состояние Pub/Sub (Broker, Subscriber, очередь, статистика)
+2. Забронировать место      8. Отказ / восстановление Subscriber
+3. Купить билет             9. Отказ / восстановление Broker
+4. Отменить билет           10. Подписать Subscriber на событие
+5. Локальное время          11. Временные ошибки Subscriber (повторная доставка)
+6. Синхронизировать время   0. Выход
 ```
 
-После каждой операции клиент показывает, какой экземпляр её обработал: `[Экземпляр данных: Replica]`.
+Все журналы ниже — реальный вывод `TicketSales.PubSubDemo`.
 
 ---
 
@@ -56,436 +53,559 @@ dotnet test                                         # тесты (нужны о�
 
 ## 1. Архитектура приложения
 
+**Что.** К архитектуре ЛР №5 добавлен слой событий:
+
 ```
- Client 1 ─┐                       ┌────────────────── Server ──────────────────┐
- Client 2 ─┼── TCP (JSON-строки) ──▶ TcpServer → ClientSession → OperationDispatcher
- Client N ─┘                       │                 │                          │
-                                   │                 ▼                          │
-                                   │      ReplicatedTicketSalesService          │
-                                   │                 │                          │
-                                   │                 ▼                          │
-                                   │        ReplicationManager                  │
-                                   │   (CHECK, Failover, Replication, Sync)     │
-                                   └──────────┬─────────────────┬───────────────┘
-                                              │                 │
-                                   DataInstance "Primary"   DataInstance "Replica"
-                                   TicketSalesServicePostgres (lock + транзакции ЛР №4)
-                                              │                 │
-                                   PostgreSQL :5433  ──репликация──▶  PostgreSQL :5434
-                                   ticketsales-primary          ticketsales-replica
+Client 1..N ──TCP/JSON──▶ Server (ClientSession → OperationDispatcher → ReplicatedTicketSalesService)
+                                   │ 1. операция на Primary/Replica (ЛР №5)
+                                   │ 2. new PubSubEvent(...)
+                                   ▼
+                               Publisher ──▶ Broker-1 (основной)  ─┐
+                                        └──▶ Broker-2 (резервный) ─┤ подписки, очередь, повторы
+                                                                   ▼
+                     Logger · SeatService · NotificationService · AnalyticsService
 ```
 
-Клиент никогда не обращается к БД напрямую: всё идёт по пути Client → Server → Primary/Replica.
+**Где в коде.**
 
-| Компонент | Файл | Роль |
-| --- | --- | --- |
-| `ClientSession` | [Networking/ClientSession.cs](src/TicketSales.Server/Networking/ClientSession.cs) | присваивает клиенту id (`Client N`), пишет `Request received` / `Request → SUCCESS`, возвращает клиенту экземпляр данных |
-| `RequestContext` | [Networking/RequestContext.cs](src/TicketSales.Server/Networking/RequestContext.cs) | id клиента и использованный экземпляр для текущего запроса (`AsyncLocal`) |
-| `ReplicatedTicketSalesService` | [Domain/Services/ReplicatedTicketSalesService.cs](src/TicketSales.Server/Domain/Services/ReplicatedTicketSalesService.cs) | чтение — на выбранном экземпляре; изменение — на выбранном экземпляре + репликация на второй |
-| `ReplicationManager` | [Replication/ReplicationManager.cs](src/TicketSales.Server/Replication/ReplicationManager.cs) | состояние экземпляров, Failover, репликация, синхронизация, статус |
-| `DataInstance` | [Replication/DataInstance.cs](src/TicketSales.Server/Replication/DataInstance.cs) | один экземпляр: своя БД, репозитории и `TicketSalesServicePostgres`; проверка доступности |
-| `DataCopier` | [Replication/DataCopier.cs](src/TicketSales.Server/Replication/DataCopier.cs) | построчная репликация, полное копирование, сравнение копий |
-| `ReplicationLog` | [Replication/ReplicationLog.cs](src/TicketSales.Server/Replication/ReplicationLog.cs) | журнал `[время] [клиент] событие` |
-| `TicketSalesServicePostgres` | [Domain/Services/TicketSalesServicePostgres.cs](src/TicketSales.Server/Domain/Services/TicketSalesServicePostgres.cs) | бизнес-логика ЛР №4 (lock + транзакции), без изменений |
-
-Операции протокола ЛР №5:
-
-| Операция | Назначение |
+| Компонент | Файл |
 | --- | --- |
-| `GetReplicationStatus { SeatId? }` | состояние Primary/Replica, активный экземпляр, сравнение копий, статус места на обоих |
-| `SetInstanceAvailability { Instance, Available }` | смоделировать отказ / восстановление экземпляра |
-| `SynchronizeInstances` | синхронизация после восстановления |
+| Event | [PubSub/PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs) |
+| Publisher | [PubSub/Publisher.cs](src/TicketSales.Server/PubSub/Publisher.cs) |
+| Broker, очередь, повторы | [PubSub/Broker.cs](src/TicketSales.Server/PubSub/Broker.cs) |
+| Subscriber | [PubSub/Subscriber.cs](src/TicketSales.Server/PubSub/Subscriber.cs) |
+| Сборка системы | [PubSub/PubSubSystem.cs](src/TicketSales.Server/PubSub/PubSubSystem.cs) |
+| Публикация из сервера | [ReplicatedTicketSalesService.cs:52](src/TicketSales.Server/Domain/Services/ReplicatedTicketSalesService.cs#L52) |
+| Операции протокола | [Handlers/PubSubHandlers.cs](src/TicketSales.Server/Dispatching/Handlers/PubSubHandlers.cs) |
+| DTO | [Shared/Dto/PubSubDtos.cs](src/TicketSales.Shared/Dto/PubSubDtos.cs) |
 
-## 2. Primary
+**Как работает.** Каждая операция ЛР №5 выполняется как раньше. После успеха сервер вызывает только
+`Publisher.Publish(event)`; о подписчиках он ничего не знает. Через протокол доступны новые операции:
 
-Основной экземпляр — контейнер `ticketsales-primary` (`postgres:17-alpine`, порт **5433**, том `ticketsales-primary-data`).
-В штатном режиме все чтения и изменения выполняются на нём. При первом запуске сервер создаёт на Primary схему и
-начальные данные (`PostgresSchemaInitializer.EnsureCreatedAndSeeded`).
+- `GetPubSubStatus` — состояние Broker и Subscriber, очередь, статистика;
+- `SetPubSubAvailability { Component, Available, TransientFailures }` — моделирование отказа;
+- `Subscribe { Subscriber, EventType }` — регистрация подписки.
 
-## 3. Replica
+## 2. Publisher
 
-Резервный экземпляр — отдельный контейнер `ticketsales-replica` (порт **5434**, свой том `ticketsales-replica-data`).
-Это независимая БД: сервер создаёт на ней только схему (`PostgresSchemaInitializer.EnsureCreated`), а данные Replica
-получает исключительно копированием с Primary. Используется как резервная копия и как экземпляр для Failover.
+**Что.** Компонент, который принимает событие от сервера и передаёт его в Broker.
 
-## 4. Структура хранилища данных
+**Где.** [Publisher.cs:19](src/TicketSales.Server/PubSub/Publisher.cs#L19), метод `Publish`.
 
-Одинаковая схема на обоих экземплярах:
+**Как работает.**
+- Перебирает Broker по порядку: первый доступный принимает событие.
+- Возвращает `PublishResult(Success, Broker, Error, Delivery)`. `Delivery` — задача доставки, которую сервер не ждёт.
+- Исключений наружу не выбрасывает: недоступный Broker или некорректное событие превращаются в `Success=false` с понятным `Error` и пишутся в журнал.
+- В коде Publisher нет ни одного типа Subscriber.
 
-| Таблица | Поля | Изменяется операциями |
+## 3. Broker
+
+**Что.** Принимает события, хранит подписки, определяет получателей, доставляет события, обрабатывает ошибки и хранит очередь.
+
+**Где.** [Broker.cs:83](src/TicketSales.Server/PubSub/Broker.cs#L83) `Publish`, [Broker.cs:134](src/TicketSales.Server/PubSub/Broker.cs#L134) `DeliverAsync`.
+
+**Как работает.**
+1. Если Broker недоступен, выбрасывается `BrokerUnavailableException`.
+2. `e.Validate()` проверяет событие, в журнал пишется `EVENT RECEIVED`.
+3. Получатели берутся из словаря `тип события → List<Subscriber>`.
+4. Доставка запускается в фоне через `Task.Run` и `Task.WhenAll`.
+5. Ошибка доставки одному Subscriber перехватывается внутри `DeliverAsync` и не влияет на остальных.
+
+## 4. Subscriber
+
+**Что.** Абстрактный класс `Subscriber` и четыре реализации:
+
+| Subscriber | Назначение | Задержка |
 | --- | --- | --- |
-| `events` | id, title, venue, starts_at, base_price | — (справочник) |
-| `seats` | id, event_id → events, row, number, **status**, UNIQUE(event_id, row, number) | ReserveSeat, BuyTicket, CancelTicket |
-| `customers` | id, full_name, email UNIQUE | ReserveSeat (новый покупатель) |
-| `tickets` | id, event_id, seat_id → seats, customer_id → customers, status, created_at | ReserveSeat, BuyTicket, CancelTicket |
-| `payments` | id, ticket_id → tickets, amount, status, created_at | BuyTicket |
+| `LoggerSubscriber` («Logger») | пишет событие в журнал | 1 с |
+| `SeatService` | изменяет состояние предметной области (билет → Reserved / Sold / Free) | 3 с |
+| `NotificationService` | формирует уведомление покупателю | 2 с |
+| `AnalyticsService` | собирает статистику по типам и клиентам, данные не меняет | 0,5 с |
 
-**Что реплицируется.** Главный ресурс — `seats.status` (состояние места: изменяется в ходе работы, имеет понятное
-состояние, легко сравнивается, это общий ресурс ЛР №2–4). Вместе с ним передаются связанные строки, без которых
-состояние места не имеет смысла: билет, покупатель и платежи.
+**Где.** [Subscriber.cs:37](src/TicketSales.Server/PubSub/Subscriber.cs#L37) `HandleAsync`, реализации ниже в том же файле.
 
-**Как реплицируется.** После успешного изменения на активном экземпляре `DataCopier.CopyTicketRows` копирует на
-второй экземпляр все строки, связанные с билетом (`customers` → `seats` → `tickets` → `payments`, порядок внешних
-ключей), через `INSERT … ON CONFLICT (id) DO UPDATE` в одной транзакции, затем сдвигает счётчики `SERIAL`
-(`setval`), чтобы следующий `INSERT` уже на втором экземпляре (после Failover) не получил занятый id.
+**Как работает.** `HandleAsync`:
+1. проверяет `Available`;
+2. ждёт `Delay`;
+3. при необходимости имитирует временную ошибку;
+4. вызывает `Process(e)` и сохраняет событие в `Received`.
 
-**Как сравниваются копии.** Для каждой таблицы — `COUNT(*)` и `md5(string_agg(строка::text ORDER BY id))`;
-дополнительно построчно сравниваются статусы мест, чтобы расхождение было видно в терминах предметной области
-(`место 3: Primary = Free, Replica = Sold`).
+Результат и ошибка возвращаются в Broker: успешное завершение задачи либо исключение.
 
-## 5. Начальное совпадение данных
+## 5. Структура Event
 
-При запуске `ReplicationManager.Initialize` проверяет оба экземпляра, сравнивает копии и, если они различаются,
-копирует Primary → Replica. В демо обе БД засеваются независимо (у событий разное `starts_at = now() + …`),
-поэтому сервер находит расхождение и выравнивает его:
+**Что.** `PubSubEvent`:
 
-```
-[17:55:08.753] [Server] Startup → проверка экземпляров
-[17:55:08.773] [Server] Primary → AVAILABLE
-[17:55:08.774] [Server] Replica → AVAILABLE
-[17:55:08.787] [Server] Начальное состояние → расхождений: 1, копирование Primary → Replica
-[17:55:08.817] [Server] Начальное состояние → Primary = Replica
-```
+| Поле | Значение |
+| --- | --- |
+| `Id` | Guid |
+| `Type` | тип события |
+| `EntityId` | id места или билета |
+| `ClientId` | `Client N` из `RequestContext` |
+| `Timestamp` | время создания |
+| `Data` | дополнительные данные |
 
-Проверка (Часть 1, Требование 7):
+Класс назван `PubSubEvent`, потому что `Event` в проекте — это мероприятие.
 
-| Значение | Primary | Replica | Совпадает |
+**Где.** [PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs). `EventTypes` — три типа, `Validate()` — проверка.
+
+**Как работает.** Какие события создаёт сервер:
+
+| Операция | Событие | EntityId | Data |
 | --- | --- | --- | --- |
-| Место 1 | Free | Free | да |
-| Место 2 | Free | Free | да |
-| Место 3 | Free | Free | да |
-| Свободных мест | 18 | 18 | да |
-| Билетов | 0 | 0 | да |
-| Хэши всех 5 таблиц | — | — | совпадают (`Consistent = true`) |
+| ReserveSeat | `SeatReserved` | id места | `TicketId`, `EventId` |
+| BuyTicket | `TicketPurchased` | id билета | `Amount` |
+| CancelTicket | `TicketCancelled` | id билета | — |
 
-## 6–8. Работающая репликация: изменение в Primary и передача в Replica
+## 6. Механизм регистрации подписки
 
-Клиент вызывает операцию → сервер проверяет Primary → выполняет изменение на Primary (lock + транзакция ЛР №4) →
-реплицирует связанные строки на Replica → проверяет копии. Код: `ReplicatedTicketSalesService.WriteAsync`
-и `ReplicationManager.ReplicateTicket`.
+**Что.** `Subscribe(subscriber, eventType)`.
 
-Изменение и репликация выполняются под одним шлюзом `WriteGate` (`SemaphoreSlim(1,1)`), поэтому изменения
-попадают в Replica в том же порядке, что и в Primary, и не пересекаются с синхронизацией. Чтения шлюз не берут —
-параллельная обработка запросов сохраняется.
+**Где.** [Broker.cs:41](src/TicketSales.Server/PubSub/Broker.cs#L41) и [PubSubSystem.cs:50](src/TicketSales.Server/PubSub/PubSubSystem.cs#L50).
 
-## 9. Журнал репликации
+**Как работает.**
+- `PubSubSystem.Subscribe` ищет Subscriber в каталоге. Если его там нет — `NOT_FOUND «Subscriber не зарегистрирован»`.
+- Затем подписывает его на всех Broker.
+- `Broker.Subscribe` проверяет тип события (неизвестный тип — `VALIDATION_ERROR`) и добавляет Subscriber в список под `lock`.
 
-Изменение 1 (реальный вывод `TicketSales.ReplicationDemo`):
+Начальные подписки создаёт `PubSubSystem.Create`:
 
 ```
-[17:55:08.888] [Client 1] Request received: ReserveSeat (requestId=0e8eb8d0-…)
-[17:55:08.890] [Client 1] Primary → CHECK
-[17:55:08.890] [Client 1] Primary → AVAILABLE
-[17:55:08.890] [Client 1] Primary → UPDATE ReserveSeat seat=1
-[17:55:08.898] [Client 1] Primary → SUCCESS
-[17:55:08.898] [Client 1] Replication → START (Primary → Replica, ticketId=1)
-[17:55:08.904] [Client 1] Replica → UPSERT (customers: 1, seats: 1, tickets: 1, payments: 0)
-[17:55:08.904] [Client 1] Replication → SUCCESS
-[17:55:08.905] [Client 1] Request → SUCCESS (экземпляр: Primary)
+Broker-1 → SUBSCRIBE Logger: TicketPurchased        Broker-1 → SUBSCRIBE SeatService: SeatReserved
+Broker-1 → SUBSCRIBE NotificationService: TicketPurchased  ... (то же на Broker-2)
 ```
 
-Изменение 2 (другой клиент, покупка — реплицируется и платёж):
+| Subscriber | TicketPurchased | SeatReserved | TicketCancelled |
+| --- | --- | --- | --- |
+| Logger | ✓ | ✓ | ✓ |
+| SeatService | ✓ | ✓ | ✓ |
+| NotificationService | ✓ | — | ✓ |
+| AnalyticsService | подписывается во время работы (п. 18) | | |
+
+## 7. Публикация события
+
+**Что.** Путь Server → Publisher → Broker.
+
+**Где.** [ReplicatedTicketSalesService.cs:52](src/TicketSales.Server/Domain/Services/ReplicatedTicketSalesService.cs#L52) `PublishAsync`.
+
+**Как работает.** Событие публикуется после успешной операции и репликации, то есть только для изменений, которые действительно произошли:
 
 ```
-[17:55:08.919] [Client 2] Request received: BuyTicket (requestId=304766a4-…)
-[17:55:08.919] [Client 2] Primary → CHECK
-[17:55:08.920] [Client 2] Primary → AVAILABLE
-[17:55:08.920] [Client 2] Primary → UPDATE BuyTicket ticket=1
-[17:55:08.925] [Client 2] Primary → SUCCESS
-[17:55:08.925] [Client 2] Replication → START (Primary → Replica, ticketId=1)
-[17:55:08.930] [Client 2] Replica → UPSERT (customers: 1, seats: 1, tickets: 1, payments: 1)
-[17:55:08.930] [Client 2] Replication → SUCCESS
-[17:55:08.934] [Client 2] Request → SUCCESS (экземпляр: Primary)
+[10:42:21.050] [Client 1] Server → SeatReserved
+[10:42:21.051] [Client 1] Publisher → PUBLISH SeatReserved(EntityId=1, Client 1)
+[10:42:21.051] [Client 1] Broker-1 → EVENT RECEIVED SeatReserved(EntityId=1, Client 1)
+[10:42:21.051] [Client 1] Broker-1 → получатели SeatReserved: Logger, SeatService
+[10:42:21.051] [Client 1] Publisher → ACCEPTED by Broker-1
+[10:42:21.056] [Client 1] Request → SUCCESS (экземпляр: Primary)
 ```
 
-В журнале есть время, идентификатор клиента, операция, экземпляр данных, результат, событие репликации и
-состояние экземпляра.
+## 8. Доставка события Subscriber
 
-### Таблица результатов репликации (Часть 2, Требование 2)
+**Что.** Broker вызывает `HandleAsync` каждого подходящего Subscriber.
 
-Значение — статус изменяемого места на каждом экземпляре; после каждого изменения дополнительно проверялось
-совпадение хэшей всех таблиц.
+**Где.** [Broker.cs:126](src/TicketSales.Server/PubSub/Broker.cs#L126) `DeliverAllAsync` и `DeliverAsync`.
 
-| № | Операция | Primary до | Primary после | Replica до | Replica после | Репликация | Результат |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | Client 1: ReserveSeat (место 1) | Free | Reserved | Free | Reserved | SUCCESS | Primary = Replica |
-| 2 | Client 2: BuyTicket (билет 1, место 1) | Reserved | Sold | Reserved | Sold | SUCCESS | Primary = Replica |
-| 3 | Client 1: ReserveSeat (место 2) | Free | Reserved | Free | Reserved | SUCCESS | Primary = Replica |
-| 4 | Client 1: ReserveSeat (место 4), контроль после восстановления | Free | Reserved | Free | Reserved | SUCCESS | Primary = Replica |
-
-## 10. Штатное состояние системы
-
-Сервер, Client 1, Client 2, Primary и Replica запущены:
+**Как работает.**
 
 ```
-Primary: AVAILABLE, Replica: AVAILABLE, активный: Primary, согласованность: Primary = Replica
+[10:42:21.053] [Client 1] Broker-1 → SeatService SeatReserved (attempt 1)
+[10:42:21.053] [Client 1] Broker-1 → Logger SeatReserved (attempt 1)
+[10:42:22.055] [Client 1] Logger → журнал: SeatReserved(EntityId=1, Client 1) at 10:42:21.050
+[10:42:22.055] [Client 1] Logger → SUCCESS SeatReserved (attempt 1, 1003 ms)
+[10:42:24.057] [Client 1] SeatService → SUCCESS SeatReserved (attempt 1, 3004 ms)
+[10:42:24.058] [Client 1] Broker-1 → ALL DONE SeatReserved: SUCCESS 2/2, 3008 ms от публикации
 ```
 
-## 11. Искусственно созданный отказ Primary
+## 9. Несколько Subscriber
 
-Реализованы оба способа:
+**Что.** Одно событие `TicketPurchased` получают три Subscriber.
 
-1. **Реальная остановка экземпляра** — `docker stop ticketsales-primary`. Сервер получает настоящую ошибку
-   подключения. Восстановление — `docker start ticketsales-primary`.
-2. **Имитация ошибки подключения в программе** — пункт меню клиента 8 (`SetInstanceAvailability`,
-   `Available = false`): `DataInstance.SimulatedFailure = true`, и экземпляр отвечает на проверку как недоступный,
-   хотя БД работает. Удобно для демонстрации и используется в тестах.
+**Где.** Тест `OneEvent_IsDeliveredToAllSubscribers` и шаг 6 в демо.
+
+**Как работает.**
 
 ```
-[17:55:08.974] [Client 1] Primary → FAILURE (смоделирован отказ, экземпляр UNAVAILABLE)
-[17:55:08.974] [Client 1] Status → Primary UNAVAILABLE, Replica AVAILABLE, активный: Replica, согласованность: не проверить
+[10:42:24.618] [Client 1] Broker-1 → получатели TicketPurchased: Logger, SeatService, NotificationService
+[10:42:25.620] [Client 1] Logger → SUCCESS TicketPurchased (attempt 1, 1002 ms)
+[10:42:26.622] [Client 1] NotificationService → уведомление покупателю: TicketPurchased, билет 1
+[10:42:26.622] [Client 1] NotificationService → SUCCESS TicketPurchased (attempt 1, 2004 ms)
+[10:42:27.624] [Client 1] SeatService → SUCCESS TicketPurchased (attempt 1, 3005 ms)
+[10:42:27.624] [Client 1] Broker-1 → ALL DONE TicketPurchased: SUCCESS 3/3, 3006 ms от публикации
 ```
 
-## 12. Обнаружение отказа
+## 10. Несколько типов событий
 
-Перед каждым запросом `ReplicationManager.ResolveForRequest` проверяет Primary: `DataInstance.CheckState` открывает
-соединение и выполняет `SELECT 1` (таймаут подключения 2 с). Любая ошибка → `UNAVAILABLE`. После остановки или
-перезапуска контейнера в пуле Npgsql остаются «мёртвые» соединения, поэтому при ошибке пул очищается и проверка
-повторяется один раз — иначе восстановленный Primary мог бы ложно считаться недоступным. Сервер при отказе не
-падает: отказ — обычный результат проверки, а не необработанное исключение.
+**Что.** Три типа событий: `TicketPurchased`, `SeatReserved`, `TicketCancelled`.
 
-## 13. Реализация Failover
+**Где.** `EventTypes` в [PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs). Тесты `SeveralEventTypes_AreRoutedBySubscription` и `NotSubscribedSubscriber_DoesNotReceiveEvent`.
 
-`ReplicationManager.ResolveForRequest`:
+**Как работает.** Каждый Subscriber получает только те события, на которые подписан. Например, `SeatReserved` уходит только Logger и SeatService (список получателей выше), а NotificationService его не получает. В тесте после публикации всех трёх типов у NotificationService в `Received` оказываются ровно `[TicketPurchased, TicketCancelled]`.
 
-1. Primary доступен и актуален → запрос выполняется на Primary.
-2. Иначе `Failover → START`: проверяется Replica; если она доступна и актуальна → `Request redirected to Replica`.
-3. Иначе `Failover → FAIL` и клиент получает понятную ошибку `DATA_UNAVAILABLE`.
+## 11. Журнал публикации
 
-Изменение, выполненное на Replica, тоже реплицируется на Primary, но Primary недоступен — поэтому он помечается
-как **требующий синхронизации** (`PrimaryNeedsSync`) и не используется, пока синхронизация не выполнена.
+**Что.** Записи вида `[время] [клиент] компонент → действие`.
 
-## 14. Обработка запроса через Replica
+**Где.** `ReplicationLog.Write` из ЛР №5. Записи журнала пишут Server, Publisher и Broker.
 
-Client 1 → Update после отказа Primary (программная модель отказа):
+**Как работает.** Идентификатор клиента берётся из `RequestContext`. Это `AsyncLocal`, поэтому `Client N` сохраняется и в фоновых задачах доставки. В журнале видны:
 
-```
-[17:55:08.979] [Client 1] Request received: ReserveSeat (requestId=9c1f6cd6-…)
-[17:55:08.979] [Client 1] Primary → CHECK
-[17:55:08.979] [Client 1] Primary → UNAVAILABLE
-[17:55:08.979] [Client 1] Failover → START
-[17:55:08.979] [Client 1] Replica → CHECK
-[17:55:08.979] [Client 1] Replica → AVAILABLE
-[17:55:08.979] [Client 1] Request redirected to Replica
-[17:55:08.980] [Client 1] Replica → UPDATE ReserveSeat seat=3
-[17:55:08.983] [Client 1] Replica → SUCCESS
-[17:55:08.983] [Client 1] Replication → START (Replica → Primary, ticketId=3)
-[17:55:08.983] [Client 1] Primary → UNAVAILABLE
-[17:55:08.983] [Client 1] Replication → FAIL, Primary помечен как требующий синхронизации
-[17:55:08.983] [Client 1] Request → SUCCESS (экземпляр: Replica)
-```
+- время;
+- клиент;
+- тип события;
+- Publisher;
+- Broker, который принял событие;
+- ошибка публикации (`Publisher → FAIL: …`).
 
-Клиент при этом видит:
+## 12. Журнал доставки
 
-```
-[Экземпляр данных: Replica]
-Место забронировано. TicketId = 3
-```
+**Что.** Записи `Broker → Subscriber (attempt n)`, `Subscriber → SUCCESS / FAIL / UNAVAILABLE`, `QUEUED`, `REDELIVERY`, `ALL DONE`.
 
-## 15. Журнал переключения
+**Где.** `DeliverAsync` и `History` в [Broker.cs](src/TicketSales.Server/PubSub/Broker.cs).
 
-Реальный отказ — `docker stop ticketsales-primary`, затем запросы интерактивного клиента:
+**Как работает.** Каждая доставка сохраняется в `DeliveryResult`:
 
-```
-[17:54:05.639] [Client 2] Request received: GetEvents (requestId=296ddd86-…)
-[17:54:05.641] [Client 2] Primary → CHECK
-[17:54:05.645] [Client 2] Primary → UNAVAILABLE
-[17:54:05.645] [Client 2] Failover → START
-[17:54:05.645] [Client 2] Replica → CHECK
-[17:54:05.646] [Client 2] Replica → AVAILABLE
-[17:54:05.646] [Client 2] Request redirected to Replica
-[17:54:05.646] [Client 2] Replica → READ events
-[17:54:05.649] [Client 2] Replica → SUCCESS
-[17:54:05.653] [Client 2] Request → SUCCESS (экземпляр: Replica)
-[17:54:05.671] [Client 2] Request received: ReserveSeat (requestId=82afe6bc-…)
-[17:54:05.671] [Client 2] Primary → CHECK
-[17:54:05.673] [Client 2] Primary → UNAVAILABLE
-[17:54:05.673] [Client 2] Failover → START
-[17:54:05.673] [Client 2] Replica → CHECK
-[17:54:05.674] [Client 2] Replica → AVAILABLE
-[17:54:05.674] [Client 2] Request redirected to Replica
-[17:54:05.674] [Client 2] Replica → UPDATE ReserveSeat seat=2
-[17:54:05.678] [Client 2] Replica → SUCCESS
-[17:54:05.678] [Client 2] Replication → START (Replica → Primary, ticketId=2)
-[17:54:05.679] [Client 2] Primary → UNAVAILABLE
-[17:54:05.679] [Client 2] Replication → FAIL, Primary помечен как требующий синхронизации
-[17:54:05.680] [Client 2] Request → SUCCESS (экземпляр: Replica)
-```
-
-### Таблица результатов отказа (Часть 3, Требование 5)
-
-| № | Клиент | Операция | Primary | Replica | Результат | Использованный экземпляр |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | Client 1 | Read (GetEvents) — до отказа | AVAILABLE | AVAILABLE | SUCCESS | Primary |
-| 2 | Client 2 | Read (GetSeatSnapshot, место 1) | UNAVAILABLE | AVAILABLE | SUCCESS | Replica |
-| 3 | Client 1 | Update (ReserveSeat, место 3) | UNAVAILABLE | AVAILABLE | SUCCESS | Replica |
-| 4 | Client 2 | Read (GetEvents) | UNAVAILABLE | AVAILABLE | SUCCESS | Replica |
-| 5 | Client 2 | Update (BuyTicket, билет 3) | UNAVAILABLE | AVAILABLE | SUCCESS | Replica |
-
-## 16. Восстановление Primary
-
-Пункт меню 8 → `Primary`, `2 — восстановить` (или `docker start ticketsales-primary`):
-
-```
-[17:55:08.989] [Client 1] Primary → RECOVERY (имитация отказа снята)
-[17:55:08.994] [Client 1] Status → Primary AVAILABLE, Replica AVAILABLE, активный: Replica, согласованность: ЕСТЬ РАСХОЖДЕНИЯ
-```
-
-Оба экземпляра снова `AVAILABLE`, но **активной остаётся Replica**: Primary содержит устаревшие данные, и
-обслуживать с него запросы до синхронизации нельзя — клиент увидел бы, например, проданное место 3 свободным.
-Запрос в этот момент:
-
-```
-[17:54:09.939] [Client 3] Primary → CHECK
-[17:54:09.939] [Client 3] Primary → AVAILABLE
-[17:54:09.939] [Client 3] Primary → данные устарели после отказа, требуется синхронизация
-[17:54:09.939] [Client 3] Failover → START
-[17:54:09.939] [Client 3] Replica → CHECK
-[17:54:09.940] [Client 3] Replica → AVAILABLE
-[17:54:09.940] [Client 3] Request redirected to Replica
-```
-
-## 17. Проверка состояния данных после восстановления
-
-```
-Primary: AVAILABLE (требует синхронизации), Replica: AVAILABLE, активный: Replica, согласованность: ЕСТЬ РАСХОЖДЕНИЯ
-  - seats: Primary 18 строк, Replica 18 строк — содержимое отличается
-  - customers: Primary 2 строк, Replica 3 строк — содержимое отличается
-  - tickets: Primary 2 строк, Replica 3 строк — содержимое отличается
-  - payments: Primary 1 строк, Replica 2 строк — содержимое отличается
-  - место 3: Primary = Free, Replica = Sold
-```
-
-Анализ расхождения (Часть 4, Требование 1):
-
-| Вопрос | Ответ |
+| Поле | Значение |
 | --- | --- |
-| 1. Какие операции выполнялись во время отказа? | Client 1 — ReserveSeat (место 3), Client 2 — BuyTicket (билет 3); плюс два чтения |
-| 2. На каком экземпляре? | На Replica (Primary был UNAVAILABLE) |
-| 3. Какие данные отличаются? | `seats` (место 3: Free / Sold), `customers` (2 / 3), `tickets` (2 / 3), `payments` (1 / 2) |
-| 4. Какая копия актуальна? | Replica — только она принимала изменения во время отказа (сервер это знает по флагу `PrimaryNeedsSync`) |
-| 5. Как восстановить согласованность? | Полное копирование Replica → Primary и повторное сравнение копий |
+| `Broker` | Broker, который доставлял |
+| `EventType` | тип события |
+| `Subscriber` | получатель |
+| `Status` | результат |
+| `Attempts` | число попыток |
+| `Started`, `Finished` | начало и конец доставки |
+| `Error` | ошибка |
 
-## 18. Синхронизация
+Последние 10 доставок клиент видит в пункте меню 7 «Последние доставки».
 
-Пункт меню 9 (`SynchronizeInstances`) → `ReplicationManager.SynchronizeAsync`:
+## 13. Асинхронная обработка
 
-1. Берёт `WriteGate` — во время синхронизации изменения не выполняются.
-2. Проверяет, что оба экземпляра доступны (иначе ошибка `SYNCHRONIZATION_ERROR`).
-3. Сравнивает копии и пишет расхождения в журнал.
-4. Выбирает направление: если Primary помечен как устаревший — **Replica → Primary**; если устарела Replica
-   (она была недоступна при изменении) — **Primary → Replica**.
-5. `DataCopier.CopyAll`: в одной транзакции на целевом экземпляре `TRUNCATE` всех таблиц, копирование всех строк,
-   сдвиг счётчиков id. Ошибка в середине → откат, целевой экземпляр не остаётся «наполовину скопированным».
-6. Повторно сравнивает копии; только при полном совпадении снимает флаги, и Primary снова становится активным.
+**Что.** Subscriber обрабатывают событие параллельно и независимо от Publisher и клиента.
+
+**Где.** `Task.Run(() => DeliverAllAsync(...))` в `Broker.Publish` и `Task.WhenAll(... Task.Run(DeliverAsync))`.
+
+**Как работает.** Клиент получает ответ сразу после публикации: `Request → SUCCESS` в 10:42:24.627, а SeatService закончил в 10:42:27.624. Все три Subscriber стартуют в 10:42:24.619. Общее время равно самой долгой обработке (3 с), а не сумме задержек (6 с).
+
+## 14. Искусственная задержка
+
+**Что.** У каждого Subscriber своя задержка `Delay`:
+
+| Subscriber | Задержка |
+| --- | --- |
+| Logger | 1 с |
+| NotificationService | 2 с |
+| SeatService | 3 с |
+| AnalyticsService | 0,5 с |
+
+Пауза между повторами — 0,3 с.
+
+**Где.** `PubSubSystem.Create(delayFactor)`: для тестов `delayFactor = 0`.
+
+**Как работает.** Анализ задержек (Часть 5, Требование 6), событие `TicketPurchased`:
+
+| Subscriber | Задержка | Начало доставки, мс от публикации | Обработка, мс | Завершение, мс от публикации |
+| --- | --- | --- | --- | --- |
+| Logger | 1 с | 0 | 1002 | 1002 |
+| NotificationService | 2 с | 0 | 2004 | 2004 |
+| SeatService | 3 с | 0 | 3005 | 3005 |
+
+| Этап | Время |
+| --- | --- |
+| Публикация (Publisher → ACCEPTED) | < 1 мс |
+| Ответ клиенту после публикации | 9 мс |
+| Доставка (старт обработки) | ≈ 1 мс |
+| Завершение всех Subscriber | 3006 мс, определяется самым медленным (SeatService) |
+
+## 15. Отказ одного Subscriber
+
+**Что.** SeatService становится `UNAVAILABLE`.
+
+**Где.** Флаг `Subscriber.Available`; операция `SetPubSubAvailability` (меню 8).
+
+**Как работает.** `HandleAsync` выбрасывает `SubscriberUnavailableException`:
 
 ```
-[17:55:09.000] [Client 1] Synchronization → START
-[17:55:09.000] [Client 1] Primary → AVAILABLE
-[17:55:09.000] [Client 1] Replica → AVAILABLE
-[17:55:09.003] [Client 1] Расхождение → seats: Primary 18 строк, Replica 18 строк — содержимое отличается
-[17:55:09.003] [Client 1] Расхождение → customers: Primary 2 строк, Replica 3 строк — содержимое отличается
-[17:55:09.003] [Client 1] Расхождение → tickets: Primary 2 строк, Replica 3 строк — содержимое отличается
-[17:55:09.003] [Client 1] Расхождение → payments: Primary 1 строк, Replica 2 строк — содержимое отличается
-[17:55:09.003] [Client 1] Расхождение → место 3: Primary = Free, Replica = Sold
-[17:55:09.003] [Client 1] Synchronization → копирование Replica → Primary
-[17:55:09.022] [Client 1] Synchronization → SUCCESS, Primary = Replica
+[10:42:28.142] [Client 2] SeatService → UNAVAILABLE
 ```
 
-## 19. Итоговое совпадение данных
+## 16. Обработка отказа
 
-Контрольная операция после синхронизации снова идёт через Primary и реплицируется:
+**Что.** Broker перехватывает ошибку, повторяет доставку, затем ставит событие в очередь.
+
+**Где.** `catch` в [Broker.cs:134](src/TicketSales.Server/PubSub/Broker.cs#L134) `DeliverAsync`.
+
+**Как работает.** В журнале зафиксированы: факт отказа, Subscriber, событие, сообщение об ошибке и результат доставки остальным.
 
 ```
-[17:55:09.034] [Client 1] Primary → CHECK
-[17:55:09.035] [Client 1] Primary → AVAILABLE
-[17:55:09.035] [Client 1] Primary → UPDATE ReserveSeat seat=4
-[17:55:09.038] [Client 1] Primary → SUCCESS
-[17:55:09.038] [Client 1] Replication → START (Primary → Replica, ticketId=4)
-[17:55:09.042] [Client 1] Replica → UPSERT (customers: 1, seats: 1, tickets: 1, payments: 0)
-[17:55:09.042] [Client 1] Replication → SUCCESS
-[17:55:09.047] [Client 1] Status → Primary AVAILABLE, Replica AVAILABLE, активный: Primary, согласованность: Primary = Replica
+[10:42:28.183] [Client 2] Broker-1 → Logger SeatReserved (attempt 1)
+[10:42:28.183] [Client 2] Broker-1 → SeatService SeatReserved (attempt 1)
+[10:42:28.183] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 1): SeatService недоступен
+[10:42:28.484] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 2): SeatService недоступен
+[10:42:28.785] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 3): SeatService недоступен
+[10:42:28.786] [Client 2] Broker-1 → QUEUED SeatReserved для SeatService (в очереди: 1)
+[10:42:29.185] [Client 2] Logger → SUCCESS SeatReserved (attempt 1, 1002 ms)
+[10:42:29.185] [Client 2] Broker-1 → ALL DONE SeatReserved: SUCCESS 1/2, 1002 ms от публикации
 ```
 
-Билет получил id 4 без конфликта первичного ключа — счётчики id после копирования выровнены.
+## 17. Продолжение работы других Subscriber
 
-## 20. Заполненные таблицы результатов
+**Что.** Logger успешно обработал то же событие, сервер и Broker продолжили работу. Клиент получил `ReserveSeat → OK`.
 
-Таблицы репликации и отказа — в разделах 9 и 15. Восстановление (Часть 4):
+**Где.** Тест `UnavailableSubscriber_IsQueued_OthersContinue`. После отказа тест публикует ещё одно событие и проверяет, что Broker его доставил.
 
-| Этап | Primary | Replica | Место 3 Primary | Место 3 Replica | Билетов Primary / Replica | Согласованность |
-| --- | --- | --- | --- | --- | --- | --- |
-| После восстановления Primary | AVAILABLE | AVAILABLE | Free | Sold | 2 / 3 | ЕСТЬ РАСХОЖДЕНИЯ |
-| После синхронизации Replica → Primary | AVAILABLE | AVAILABLE | Sold | Sold | 3 / 3 | Primary = Replica |
-| После контрольной операции | AVAILABLE | AVAILABLE | Sold | Sold | 4 / 4 | Primary = Replica |
+**Как работает.** Каждая доставка — отдельная задача со своим `try/catch`, поэтому исключение одного Subscriber не прерывает `Task.WhenAll` и доставку остальным.
 
-Итоговый цикл отказоустойчивости (Часть 4, Требование 3):
+## 18. Добавление нового Subscriber
 
-| № | Этап | Результат |
+**Что.** `AnalyticsService` создан при запуске, но не подписан ни на что. Подписку он получает во время работы по запросу клиента (`Subscribe`, меню 10).
+
+**Где.** [Subscriber.cs:95](src/TicketSales.Server/PubSub/Subscriber.cs#L95), [PubSubHandlers.cs](src/TicketSales.Server/Dispatching/Handlers/PubSubHandlers.cs) `SubscribeHandler`.
+
+**Как работает.** Publisher и сервер не изменялись: тот же объект `Publisher`, тот же вызов `Publish`.
+
+```
+[10:42:33.723] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: TicketPurchased
+[10:42:33.724] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: SeatReserved
+[10:42:33.725] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: TicketCancelled
+```
+
+## 19. Получение события новым Subscriber
+
+**Что.** После подписки AnalyticsService получает `TicketCancelled`.
+
+**Где.** Тест `NewSubscriber_ReceivesEvent_WithSamePublisher`. До подписки событие не приходит, после — приходит, при этом `Assert.Same(publisher, …)`.
+
+**Как работает.**
+
+```
+[10:42:33.764] [Client 2] Broker-1 → получатели TicketCancelled: Logger, SeatService, NotificationService, AnalyticsService
+[10:42:34.269] [Client 2] AnalyticsService → SUCCESS TicketCancelled (attempt 1, 504 ms)
+[10:42:36.770] [Client 2] Broker-1 → ALL DONE TicketCancelled: SUCCESS 4/4, 3006 ms от публикации
+```
+
+## 20. Сравнение прямого взаимодействия и Pub/Sub
+
+| Критерий | Прямое взаимодействие (Server → Logger, SeatService, …) | Pub/Sub (Server → Publisher → Broker → Subscriber) |
 | --- | --- | --- |
-| 1 | Primary AVAILABLE | да |
-| 2 | Replica AVAILABLE | да, начальное состояние Primary = Replica |
-| 3 | Replication | 3 изменения, все SUCCESS, после каждого Primary = Replica |
-| 4 | Primary FAILURE | программно и через `docker stop` |
-| 5 | Failover | `Failover → START` → `Request redirected to Replica` |
-| 6 | Работа через Replica | 2 чтения и 2 изменения от двух клиентов — SUCCESS |
-| 7 | Primary RECOVERY | AVAILABLE, расхождение обнаружено, Primary не используется до синхронизации |
-| 8 | Synchronization | Replica → Primary, SUCCESS |
-| 9 | Primary = Replica | да; контрольная операция через Primary реплицирована |
-
-Воспроизведение: `dotnet run --project src/TicketSales.ReplicationDemo` — выполняет весь цикл двумя клиентами через
-TCP и печатает эти же таблицы.
+| Кто о ком знает | Сервер знает каждый компонент, его адрес и интерфейс | Сервер знает только Publisher. Publisher знает только Broker. Subscriber знает только Broker |
+| Где маршрутизация | В коде сервера: последовательность вызовов | В Broker: таблица подписок `тип → Subscriber` |
+| Добавить компонент | Изменить и пересобрать сервер | Зарегистрировать Subscriber и подписку (`Subscribe`); Publisher не меняется |
+| Отказ одного компонента | Исключение в цепочке вызовов, операция может прерваться или зависнуть | Broker фиксирует ошибку, повторяет, ставит в очередь; остальные работают |
+| Время ответа клиенту | Сумма времени всех вызовов (1+2+3 = 6 с) | Время публикации (мс), обработка асинхронна |
+| Связанность | Сильная (compile-time и runtime) | Слабая: общий только контракт события |
+| Минусы | — | Нет мгновенного результата обработки, сложнее отладка, нужна доставка «не менее одного раза» |
 
 ## 21. Unit-тесты
 
-`dotnet test` — **28 тестов**, все проходят. Тесты работают с реальными Primary и Replica (docker compose);
-`ReplicatedTestServer` для каждого теста сбрасывает обе БД и поднимает сервер на свободном порту.
-
-Тесты ЛР №5 — [tests/TicketSales.Tests/ReplicationTests.cs](tests/TicketSales.Tests/ReplicationTests.cs):
+**Где.**
+- [tests/TicketSales.Tests/PubSubTests.cs](tests/TicketSales.Tests/PubSubTests.cs): 16 тестов в памяти, без БД.
+- [PubSubIntegrationTests.cs](tests/TicketSales.Tests/PubSubIntegrationTests.cs): 3 теста через TCP и PostgreSQL.
 
 | Требование | Тест |
 | --- | --- |
-| корректное начальное состояние Primary и Replica | `InitialState_PrimaryEqualsReplica` |
-| совпадение данных после репликации | `ReserveSeat_IsExecutedOnPrimary_AndReplicatedToReplica` |
-| корректная обработка изменения данных | `ThreeSequentialChanges_CopiesStayEqualAfterEachOne` |
-| определение недоступного Primary, выбор Replica | `PrimaryFailure_IsDetected_AndReplicaIsSelected` |
-| успешный запрос после Failover | `AfterFailover_ReadAndUpdateAreServedByReplica` |
-| восстановление Primary | `PrimaryRecovery_DivergenceIsDetected_AndReplicaKeepsServingUntilSync` |
-| синхронизация и совпадение после неё | `Synchronize_AfterRecovery_CopiesReplicaToPrimary_AndControlUpdateIsReplicated` |
-| оба экземпляра недоступны | `BothInstancesUnavailable_ClientGetsClearError_AndServerKeepsWorking` |
-| Replica недоступна / ошибка репликации | `ReplicaUnavailable_UpdateSucceedsOnPrimary_ReplicationFails_ThenSyncRestoresReplica` |
-| невозможность Failover | `Failover_ToStaleReplica_IsRefused` |
-| невозможность синхронизации | `Synchronize_WhenPrimaryUnavailable_ReturnsSynchronizationError` |
-| некорректный запрос | `SetInstanceAvailability_UnknownInstance_ReturnsValidationError` |
+| создание события | `Event_IsCreatedWithTypeEntityTimestampAndData` |
+| некорректное / неизвестное событие | `InvalidOrUnknownEvent_IsRejected` (2 случая) |
+| публикация | `Publish_IsAcceptedByBroker_AndDeliveredToSubscriber` |
+| регистрация Subscriber | `Subscribe_RegistersSubscriptionInEveryBroker` |
+| незарегистрированный Subscriber / неизвестный тип | `Subscribe_UnknownSubscriberOrEventType_Fails`, `UnknownSubscriber_ReturnsError` |
+| получение подписанным | `Publish_IsAcceptedByBroker_AndDeliveredToSubscriber`, `ReserveSeat_PublishesSeatReserved_ToSubscribers` |
+| нет доставки неподписанному | `NotSubscribedSubscriber_DoesNotReceiveEvent` |
+| одно событие нескольким | `OneEvent_IsDeliveredToAllSubscribers` |
+| несколько типов | `SeveralEventTypes_AreRoutedBySubscription` |
+| нет подписчиков | `NoSubscribers_EventIsAcceptedWithoutDeliveries` |
+| ошибка Subscriber, работа Broker продолжается | `UnavailableSubscriber_IsQueued_OthersContinue` |
+| новый Subscriber, получение, Publisher без изменений | `NewSubscriber_ReceivesEvent_WithSamePublisher` |
+| несколько Broker | `FirstBrokerUnavailable_PublisherUsesSecondBroker`, `AllBrokersUnavailable_PublisherReturnsClearError` |
+| очередь | `QueuedEvent_IsNotLost_AndRedeliveredAfterRecovery` |
+| повторная доставка | `TransientFailures_AreRetried_UntilSuccess` |
+| статистика | `Status_ShowsSubscriptionsQueueAndStatistics` |
+| несколько клиентов | `SeveralClients_EventsAreDeliveredPerClient` |
 
-Остальные тесты (функциональность ЛР №1–4, теперь идут через Primary/Replica): `SuccessfulScenarioTests`,
-`InvalidDataTests`, `UnknownOperationTests`, `ServerUnavailableTests`, `GetServerTimeTests`,
-`PostgresReserveSeatConcurrencyTests`, `PostgresBuyTicketConcurrencyTests`, `PostgresTransactionTests`.
-
-Тесты проверены на «поломку»: если отключить репликацию, падают 7 тестов; если убрать сдвиг счётчиков id после
-копирования — падают 2 теста Failover/синхронизации.
+**Как работает.** `dotnet test` — 48 тестов, включая тесты ЛР №1–5. Все проходят.
 
 ## 22. Обработка ошибок
 
-| Ситуация | Поведение |
+| Ситуация | Что происходит |
 | --- | --- |
-| Сервер недоступен | клиент: `ServerUnavailableException` → «Не удалось подключиться: Сервер … недоступен» |
-| Primary недоступен | Failover на Replica, запрос выполняется; клиент видит `[Экземпляр данных: Replica]` |
-| Replica недоступна | изменения выполняются на Primary; `Replication → FAIL`, Replica помечается как требующая синхронизации и не используется для Failover до неё |
-| Оба экземпляра недоступны | `DATA_UNAVAILABLE`: «Оба экземпляра данных (Primary и Replica) недоступны. Повторите запрос позже»; сервер продолжает работать |
-| Ошибка подключения к Primary / Replica | `CheckState` возвращает UNAVAILABLE (с очисткой пула и повторной попыткой), исключение не выходит наружу |
-| Ошибка чтения / изменения данных | экземпляр отказал уже во время запроса → `DATA_UNAVAILABLE` «Ошибка доступа к данным на экземпляре …»; следующий запрос обнаружит отказ и выполнит Failover. Транзакции ЛР №4 откатывают незавершённое изменение |
-| Ошибка репликации | операция клиента не отменяется (она уже зафиксирована); второй экземпляр помечается как требующий синхронизации |
-| Нарушение согласованности | обнаруживается сравнением хэшей таблиц (статус, восстановление, запуск, синхронизация); если после синхронизации копии всё ещё различаются — `SYNCHRONIZATION_ERROR` |
-| Невозможность Failover | Primary недоступен, а Replica устарела → `DATA_UNAVAILABLE` «Невозможно выполнить Failover: … Replica не синхронизирована» (устаревшие данные клиенту не отдаются) |
-| Невозможность синхронизации | один из экземпляров недоступен или ошибка копирования → `SYNCHRONIZATION_ERROR`, транзакция копирования откатывается |
-| Некорректный запрос клиента | `VALIDATION_ERROR` (неверный JSON, пустые поля, неизвестный экземпляр), `UNKNOWN_OPERATION`, `NOT_FOUND` |
+| Сервер недоступен | Клиент: `ServerUnavailableException` → «Не удалось подключиться» (ЛР №1) |
+| Broker недоступен | Publisher переключается на следующий Broker |
+| Все Broker недоступны | `PublishResult.Success = false`, `Publisher → FAIL: Broker недоступен: …`. Операция клиента выполнена, сервер работает |
+| Publisher не может опубликовать (некорректное событие) | `Validate()` → `PublishResult` с ошибкой, без исключения |
+| Subscriber недоступен / ошибка соединения | `UNAVAILABLE`, 3 попытки, затем `QUEUED` |
+| Ошибка обработки события | `FAIL (attempt n): …`, повтор |
+| Несколько Subscriber недоступны | Каждый независимо уходит в очередь, доступные получают событие |
+| Subscriber не зарегистрирован | `NOT_FOUND: Subscriber 'StockService' не зарегистрирован` |
+| Неизвестный тип события | `VALIDATION_ERROR: Неизвестный тип события: 'OrderCreated'` |
+| Нет подписки на тип | `NO SUBSCRIBERS for …`, событие принято без доставок |
+| Некорректный запрос клиента | `VALIDATION_ERROR` / `UNKNOWN_OPERATION` (ЛР №1) |
 
-## Ограничения учебной модели
+Пример, когда недоступны оба Broker:
 
-- Репликация синхронная и прикладная (сервер сам копирует строки после изменения), а не встроенная потоковая
-  репликация PostgreSQL — так в коде видны все этапы Primary → Replica → Failover → Recovery.
-- Флаги «требует синхронизации» хранятся в памяти сервера. Если сервер перезапустить во время отказа, при старте
-  он считает актуальным Primary и выравнивает Replica по нему.
-- Синхронизация запускается командой клиента (пункт 9), а не автоматически: так этапы «восстановление → проверка
-  расхождений → синхронизация» видны по отдельности, как требует ЛР.
+```
+[10:42:44.865] [Client 3] Publisher → PUBLISH SeatReserved(EntityId=5, Client 3)
+[10:42:44.865] [Client 3] Publisher → Broker-1 UNAVAILABLE, переключение на следующий Broker
+[10:42:44.865] [Client 3] Publisher → Broker-2 UNAVAILABLE, переключение на следующий Broker
+[10:42:44.865] [Client 3] Publisher → FAIL: Broker недоступен: Broker-1 недоступен; Broker-2 недоступен
+[10:42:44.866] [Client 3] Request → SUCCESS (экземпляр: Primary)
+>>> Клиент: Subscribe → ОШИБКА NOT_FOUND: Subscriber 'StockService' не зарегистрирован
+>>> Клиент: Subscribe → ОШИБКА VALIDATION_ERROR: Неизвестный тип события: 'OrderCreated'
+```
+
+## 23. Работа с несколькими Broker
+
+**Что.** `Broker-1` — основной, `Broker-2` — резервный. Подписки регистрируются на обоих.
+
+**Где.** `PubSubSystem.Create`; цикл по Broker в [Publisher.cs](src/TicketSales.Server/PubSub/Publisher.cs).
+
+**Как работает.**
+
+```
+[10:42:41.299] [Client 3] Broker-1 → UNAVAILABLE
+[10:42:41.335] [Client 3] Publisher → Broker-1 UNAVAILABLE, переключение на следующий Broker
+[10:42:41.335] [Client 3] Broker-2 → EVENT RECEIVED SeatReserved(EntityId=4, Client 3)
+[10:42:41.335] [Client 3] Publisher → ACCEPTED by Broker-2
+[10:42:44.337] [Client 3] Broker-2 → ALL DONE SeatReserved: SUCCESS 3/3, 3003 ms от публикации
+```
+
+**Анализ.**
+- **Зачем несколько Broker:** отказоустойчивость (нет единой точки отказа), распределение нагрузки, разделение по типам событий или регионам.
+- **При отказе одного Broker:** Publisher переключается на другой, и события продолжают доставляться. Но очередь отказавшего Broker недоступна, пока он не восстановится. Если отказали все Broker, событие теряется: операция в БД выполнена, а событие нет. В промышленных системах это решают паттерном Transactional Outbox.
+- **Дополнительные проблемы:**
+  - подписки нужно синхронизировать между Broker;
+  - при повторной публикации в другой Broker возможны дубли, поэтому Subscriber должны быть идемпотентны (по `Event.Id`);
+  - нет глобального порядка событий;
+  - сложнее мониторинг и согласованность очередей.
+
+## 24. Очередь событий
+
+**Что.** `Broker.Pending` (`ConcurrentQueue`) — временное хранилище событий, которые не удалось доставить после всех попыток.
+
+**Где.** `Pending.Enqueue` в `DeliverAsync`, [Broker.cs:109](src/TicketSales.Server/PubSub/Broker.cs#L109) `RedeliverPendingAsync`.
+
+**Как работает.** Когда Subscriber восстанавливается (`SetPubSubAvailability … Available = true`), все Broker повторно доставляют события из очереди. Событие не теряется:
+
+```
+    Broker-1: AVAILABLE, в очереди 1
+    SeatService: UNAVAILABLE, ..., обработано 2
+[10:42:30.703] [Client 2] SeatService → AVAILABLE
+[10:42:30.704] [Client 2] Broker-1 → REDELIVERY из очереди: 1
+[10:42:30.705] [Client 2] Broker-1 → SeatService SeatReserved (attempt 1)
+[10:42:33.709] [Client 2] SeatService → SUCCESS SeatReserved (attempt 1, 3005 ms)
+```
+
+## 25. Повторная доставка
+
+**Что.** До 3 попыток с паузой `RetryDelay` между ними.
+
+**Где.** Цикл `for (attempt…)` в `DeliverAsync`. Временный сбой моделирует `Subscriber.TransientFailures` (меню 11).
+
+**Как работает.** Attempt 1 → FAIL, Attempt 2 → FAIL, Attempt 3 → SUCCESS:
+
+```
+[10:42:37.270] [Client 1] Logger → AVAILABLE, временных ошибок: 2
+[10:42:38.296] [Client 1] Logger → FAIL SeatReserved (attempt 1): Logger: временная ошибка обработки SeatReserved
+[10:42:38.597] [Client 1] Broker-1 → Logger SeatReserved (attempt 2)
+[10:42:39.599] [Client 1] Logger → FAIL SeatReserved (attempt 2): Logger: временная ошибка обработки SeatReserved
+[10:42:39.902] [Client 1] Broker-1 → Logger SeatReserved (attempt 3)
+[10:42:40.903] [Client 1] Logger → SUCCESS SeatReserved (attempt 3, 3608 ms)
+```
+
+## 26. Статистика по событиям
+
+**Что.** `AnalyticsService` — новый тип Subscriber. Он не изменяет данные предметной области и считает события по типам и по клиентам.
+
+**Где.** [Subscriber.cs:95](src/TicketSales.Server/PubSub/Subscriber.cs#L95); выдача через `GetPubSubStatus` (меню 7).
+
+**Как работает.** Состояние в конце демо:
+
+```
+    Logger: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 9
+    SeatService: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 9
+    NotificationService: AVAILABLE, подписки [TicketPurchased, TicketCancelled], обработано 2
+    AnalyticsService: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 6
+    AnalyticsService по типам: SeatReserved=5, TicketCancelled=1
+    AnalyticsService по клиентам: Client 2=2, Client 1=2, Client 3=2
+```
+
+## 27. Работа с несколькими клиентами
+
+**Что.** Client 1, 2 и 3 одновременно бронируют места 6, 7 и 8.
+
+**Где.** Демо и тест `SeveralClients_EventsAreDeliveredPerClient`.
+
+**Как работает.** Каждый запрос получает своё событие с собственным `ClientId`. Broker доставляет их параллельно, журналы не смешивают клиентов:
+
+```
+[10:42:44.882] [Client 1] Publisher → PUBLISH SeatReserved(EntityId=6, Client 1)
+[10:42:44.894] [Client 2] Publisher → PUBLISH SeatReserved(EntityId=7, Client 2)
+[10:42:44.907] [Client 3] Publisher → PUBLISH SeatReserved(EntityId=8, Client 3)
+[10:42:45.383] [Client 1] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
+[10:42:45.395] [Client 2] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
+[10:42:45.409] [Client 3] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
+[10:42:47.883] [Client 1] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
+[10:42:47.894] [Client 2] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
+[10:42:47.908] [Client 3] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
+```
+
+## Итоговый эксперимент (Часть 4, Требование 3)
+
+`dotnet run --project src/TicketSales.PubSubDemo` выполняет весь цикл:
+
+1. Сервер выполняет операцию.
+2. Формируется Event.
+3. Publisher публикует Event.
+4. Broker принимает Event.
+5. Broker определяет подписчиков.
+6. Несколько Subscriber получают Event.
+7. SeatService становится недоступным.
+8. Остальные Subscriber продолжают работу.
+9. Подключается AnalyticsService.
+10. AnalyticsService получает событие.
+
+Затем демо показывает Часть 5: очередь, повторы, Broker-2, все Broker недоступны, ошибки, несколько клиентов.
+
+---
+
+# Ответы на контрольные вопросы
+
+1. **Что такое Pub/Sub?** Модель взаимодействия, в которой отправитель публикует событие определённого типа, не зная получателей. Посредник (Broker) доставляет событие всем, кто подписался на этот тип.
+
+2. **Что такое Publisher?** Компонент, который публикует события. Здесь это `Publisher`: получает событие от сервера и передаёт в Broker. С Subscriber напрямую не общается.
+
+3. **Что такое Broker?** Посредник. Принимает события, хранит подписки, определяет получателей, доставляет события, обрабатывает ошибки, повторяет доставку и хранит очередь недоставленных событий.
+
+4. **Что такое Subscriber?** Компонент, который регистрирует интерес к типам событий и обрабатывает полученные события. Здесь это Logger, SeatService, NotificationService и AnalyticsService.
+
+5. **Что такое Event?** Сообщение о факте, который уже произошёл (например, `SeatReserved`), а не команда. Содержит тип, id объекта, время, клиента и дополнительные данные.
+
+6. **Как взаимодействуют Publisher и Broker?** Publisher вызывает `Broker.Publish(event)`. Broker проверяет событие и сразу подтверждает приём (`ACCEPTED`), а доставку выполняет асинхронно. Если Broker недоступен, Publisher получает исключение, пробует следующий Broker и возвращает понятный `PublishResult`.
+
+7. **Может ли один Subscriber получать несколько типов событий?** Да. Logger и SeatService подписаны на все три типа, NotificationService — на два.
+
+8. **Что такое слабая связанность компонентов?** Компоненты зависят только от общего контракта (формата события и Broker), а не друг от друга. Их можно изменять, добавлять, удалять и запускать независимо.
+
+9. **Почему Publisher не должен напрямую обращаться к Subscriber?** Иначе Publisher должен знать состав, адреса и интерфейсы всех получателей. Любой новый компонент потребовал бы изменения Publisher, а отказ или медленная работа Subscriber блокировали бы публикацию.
+
+10. **Для чего используется асинхронная обработка событий?** Чтобы операция и ответ клиенту не ждали обработки (ответ за миллисекунды вместо 3–6 с), чтобы Subscriber работали параллельно и чтобы отказ одного Subscriber не задерживал остальных.
+
+11. **Как проверить, что Subscriber не получает событие, на которое он не подписан?** Опубликовать событие и проверить, что у неподписанного Subscriber пусто (`Received` / счётчик «обработано»), а в журнале его нет в списке получателей. Тест `NotSubscribedSubscriber_DoesNotReceiveEvent`: после `SeatReserved` у NotificationService и AnalyticsService ничего нет.
+
+12. **Что произойдёт при отсутствии подписчиков на событие?** Broker примет событие, запишет `NO SUBSCRIBERS for …` и завершит доставку с пустым результатом. Публикация успешна, ошибки нет. Событие никуда не попадает, поскольку оно не хранится для будущих подписчиков.
+
+13. **Что произойдёт, если Broker недоступен?** Publisher получит `BrokerUnavailableException` и переключится на Broker-2. Если недоступны все Broker, он вернёт `Success=false` с сообщением «Broker недоступен». Сервер не падает, операция клиента уже выполнена, но событие потеряно (нужен outbox).
+
+14. **Какие преимущества даёт Pub/Sub при добавлении новых компонентов?** Новый Subscriber подключается только регистрацией подписки, без изменения Publisher, сервера и других Subscriber. Пример — AnalyticsService, подключённый во время работы.
+
+15. **Какие недостатки может иметь Pub/Sub?**
+    - Нет немедленного результата обработки (eventual consistency).
+    - Broker — дополнительный компонент и потенциальная точка отказа.
+    - Сложнее отладка и трассировка цепочки.
+    - Возможны дубли и нарушение порядка событий.
+    - Нужны идемпотентность, очереди и мониторинг.
+
+16. **Какие проблемы могут возникнуть при большом количестве событий?**
+    - Рост очередей и памяти Broker.
+    - Увеличение задержки доставки.
+    - Перегрузка медленных Subscriber, поэтому нужны back-pressure и ограничение параллелизма.
+    - Лавина повторов при массовых отказах.
+    - Потеря событий при переполнении или отказе Broker без персистентности.
+    - Сложность сохранения порядка.
+    - Нагрузка на журналы и мониторинг.

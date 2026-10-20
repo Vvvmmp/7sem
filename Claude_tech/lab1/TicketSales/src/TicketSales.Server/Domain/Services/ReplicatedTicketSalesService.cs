@@ -2,6 +2,7 @@ using System;
 using System.Threading.Tasks;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Networking;
+using TicketSales.Server.PubSub;
 using TicketSales.Server.Replication;
 using TicketSales.Shared.Dto;
 
@@ -16,10 +17,12 @@ namespace TicketSales.Server.Domain.Services;
 public class ReplicatedTicketSalesService : ITicketSalesService
 {
     private readonly ReplicationManager _replication;
+    private readonly Publisher? _publisher;
 
-    public ReplicatedTicketSalesService(ReplicationManager replication)
+    public ReplicatedTicketSalesService(ReplicationManager replication, Publisher? publisher = null)
     {
         _replication = replication;
+        _publisher = publisher;
     }
 
     public Task<GetEventsResponseDto> GetEvents(GetEventsRequestDto request) =>
@@ -29,16 +32,35 @@ public class ReplicatedTicketSalesService : ITicketSalesService
         ReadAsync($"READ seat {request.SeatId}", instance => instance.Service.GetSeatSnapshot(request));
 
     public Task<ReserveSeatResponseDto> ReserveSeat(ReserveSeatRequestDto request) =>
-        WriteAsync($"UPDATE ReserveSeat seat={request.SeatId}", instance => instance.Service.ReserveSeat(request), result => result.TicketId);
+        PublishAsync(
+            WriteAsync($"UPDATE ReserveSeat seat={request.SeatId}", instance => instance.Service.ReserveSeat(request), result => result.TicketId),
+            result => new PubSubEvent(EventTypes.SeatReserved, request.SeatId, new() { ["TicketId"] = result.TicketId.ToString(), ["EventId"] = request.EventId.ToString() }));
 
     public Task<BuyTicketResponseDto> BuyTicket(BuyTicketRequestDto request) =>
-        WriteAsync($"UPDATE BuyTicket ticket={request.TicketId}", instance => instance.Service.BuyTicket(request), _ => request.TicketId);
+        PublishAsync(
+            WriteAsync($"UPDATE BuyTicket ticket={request.TicketId}", instance => instance.Service.BuyTicket(request), _ => request.TicketId),
+            result => new PubSubEvent(EventTypes.TicketPurchased, request.TicketId, new() { ["Amount"] = result.Amount.ToString() }));
 
     public Task<CancelTicketResponseDto> CancelTicket(CancelTicketRequestDto request) =>
-        WriteAsync($"UPDATE CancelTicket ticket={request.TicketId}", instance => instance.Service.CancelTicket(request), _ => request.TicketId);
+        PublishAsync(
+            WriteAsync($"UPDATE CancelTicket ticket={request.TicketId}", instance => instance.Service.CancelTicket(request), _ => request.TicketId),
+            _ => new PubSubEvent(EventTypes.TicketCancelled, request.TicketId));
 
     // Время сервера не хранится в БД, экземпляр данных для него не нужен.
     public Task<GetServerTimeResponseDto> GetServerTime() => _replication.Primary.Service.GetServerTime();
+
+    private async Task<T> PublishAsync<T>(Task<T> operation, Func<T, PubSubEvent> createEvent)
+    {
+        var result = await operation;
+        if (_publisher is not null)
+        {
+            var e = createEvent(result);
+            ReplicationLog.Write($"Server → {e.Type}");
+            _publisher.Publish(e);
+        }
+
+        return result;
+    }
 
     private async Task<T> ReadAsync<T>(string operation, Func<DataInstance, Task<T>> action)
     {

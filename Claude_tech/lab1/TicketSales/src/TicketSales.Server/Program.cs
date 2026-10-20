@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using TicketSales.Server.Dispatching;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Networking;
+using TicketSales.Server.PubSub;
 using TicketSales.Server.Replication;
 
 var port = 5050;
@@ -42,7 +43,7 @@ catch (DataUnavailableException ex)
     return;
 }
 
-var dispatcher = ServerComposition.CreateDispatcher(replication);
+var dispatcher = ServerComposition.CreateDispatcher(replication, PubSubSystem.Create());
 var server = new TcpServer(IPAddress.Any, port, dispatcher);
 
 Console.WriteLine($"Сервер продажи билетов запущен на порту {server.Port}");

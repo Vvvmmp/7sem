@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -71,13 +72,19 @@ while (running)
                 await HandleSynchronizeTime(client, clockOffset);
                 break;
             case "7":
-                await HandleReplicationStatus(client);
+                await HandlePubSubStatus(client);
                 break;
             case "8":
-                await HandleSetInstanceAvailability(client);
+                await HandleSetPubSubAvailability(client, "Subscriber (Logger / SeatService / NotificationService / AnalyticsService)", false);
                 break;
             case "9":
-                await HandleSynchronizeInstances(client);
+                await HandleSetPubSubAvailability(client, "Broker (Broker-1 / Broker-2)", false);
+                break;
+            case "10":
+                await HandleSubscribe(client);
+                break;
+            case "11":
+                await HandleSetPubSubAvailability(client, "Subscriber", true);
                 break;
             case "0":
                 running = false;
@@ -106,9 +113,11 @@ static void PrintMenu()
     Console.WriteLine("4. Отменить билет");
     Console.WriteLine("5. Показать локальное время (с учетом смещения)");
     Console.WriteLine("6. Синхронизировать время с сервером");
-    Console.WriteLine("7. Состояние Primary / Replica");
-    Console.WriteLine("8. Смоделировать отказ / восстановление экземпляра");
-    Console.WriteLine("9. Синхронизировать Primary и Replica");
+    Console.WriteLine("7. Состояние Pub/Sub (Broker, Subscriber, очередь, статистика)");
+    Console.WriteLine("8. Отказ / восстановление Subscriber");
+    Console.WriteLine("9. Отказ / восстановление Broker");
+    Console.WriteLine("10. Подписать Subscriber на событие");
+    Console.WriteLine("11. Временные ошибки Subscriber (повторная доставка)");
     Console.WriteLine("0. Выход");
     Console.Write("Выберите пункт: ");
 }
@@ -252,104 +261,69 @@ static void PrintDataInstance(Response response)
     }
 }
 
-static async Task HandleReplicationStatus(NetworkClient client)
+static async Task HandlePubSubStatus(NetworkClient client)
 {
-    Console.Write("Id места для сравнения на Primary и Replica (Enter — пропустить): ");
-    var seatInput = Console.ReadLine();
-    int? seatId = int.TryParse(seatInput, out var parsedSeatId) ? parsedSeatId : null;
+    PrintPubSubStatus(await client.SendAsync("GetPubSubStatus", new GetPubSubStatusRequestDto()));
+}
 
-    var response = await client.SendAsync("GetReplicationStatus", new GetReplicationStatusRequestDto { SeatId = seatId });
+static async Task HandleSetPubSubAvailability(NetworkClient client, string prompt, bool transient)
+{
+    Console.Write($"{prompt}: ");
+    var request = new SetPubSubAvailabilityRequestDto { Component = (Console.ReadLine() ?? string.Empty).Trim(), Available = true };
+
+    if (transient)
+    {
+        Console.Write("Сколько попыток доставки завершить ошибкой [2]: ");
+        request.TransientFailures = int.TryParse(Console.ReadLine(), out var failures) ? failures : 2;
+    }
+    else
+    {
+        Console.Write("1 — смоделировать отказ, 2 — восстановить: ");
+        request.Available = (Console.ReadLine() ?? string.Empty).Trim() == "2";
+    }
+
+    PrintPubSubStatus(await client.SendAsync("SetPubSubAvailability", request));
+}
+
+static async Task HandleSubscribe(NetworkClient client)
+{
+    Console.Write("Subscriber [AnalyticsService]: ");
+    var subscriber = Console.ReadLine();
+    Console.Write("Тип события (TicketPurchased / SeatReserved / TicketCancelled): ");
+    var eventType = (Console.ReadLine() ?? string.Empty).Trim();
+
+    PrintPubSubStatus(await client.SendAsync("Subscribe", new SubscribeRequestDto
+    {
+        Subscriber = string.IsNullOrWhiteSpace(subscriber) ? "AnalyticsService" : subscriber.Trim(),
+        EventType = eventType
+    }));
+}
+
+static void PrintPubSubStatus(Response response)
+{
     if (!response.Success || response.Data is null)
     {
         Console.WriteLine($"Ошибка: {response.Error?.Message}");
         return;
     }
 
-    PrintReplicationStatus(response.Data.Value.Deserialize<ReplicationStatusDto>(JsonDefaults.Options)!);
-}
-
-static async Task HandleSetInstanceAvailability(NetworkClient client)
-{
-    Console.Write("Экземпляр (Primary / Replica): ");
-    var instance = (Console.ReadLine() ?? string.Empty).Trim();
-
-    Console.Write("1 — смоделировать отказ, 2 — восстановить: ");
-    var available = (Console.ReadLine() ?? string.Empty).Trim() == "2";
-
-    var response = await client.SendAsync("SetInstanceAvailability", new SetInstanceAvailabilityRequestDto
+    var status = response.Data.Value.Deserialize<PubSubStatusDto>(JsonDefaults.Options)!;
+    foreach (var broker in status.Brokers)
     {
-        Instance = instance,
-        Available = available
-    });
-
-    if (!response.Success || response.Data is null)
-    {
-        Console.WriteLine($"Ошибка: {response.Error?.Message}");
-        return;
+        Console.WriteLine($"{broker.Name}: {(broker.Available ? "AVAILABLE" : "UNAVAILABLE")} | в очереди: {broker.Pending}");
     }
 
-    PrintReplicationStatus(response.Data.Value.Deserialize<ReplicationStatusDto>(JsonDefaults.Options)!);
-}
-
-static async Task HandleSynchronizeInstances(NetworkClient client)
-{
-    var response = await client.SendAsync("SynchronizeInstances", new SynchronizeInstancesRequestDto());
-    if (!response.Success || response.Data is null)
+    foreach (var subscriber in status.Subscribers)
     {
-        Console.WriteLine($"Ошибка: {response.Error?.Message}");
-        return;
+        var types = subscriber.EventTypes.Count == 0 ? "нет подписок" : string.Join(", ", subscriber.EventTypes);
+        Console.WriteLine($"{subscriber.Name}: {(subscriber.Available ? "AVAILABLE" : "UNAVAILABLE")} | {types} | обработано: {subscriber.Processed}");
     }
 
-    var result = response.Data.Value.Deserialize<SynchronizeInstancesResponseDto>(JsonDefaults.Options)!;
-    if (result.Source is null)
+    Console.WriteLine($"Статистика AnalyticsService по типам: {string.Join(", ", status.EventsByType.Select(p => $"{p.Key}={p.Value}"))}");
+    Console.WriteLine($"Статистика AnalyticsService по клиентам: {string.Join(", ", status.EventsByClient.Select(p => $"{p.Key}={p.Value}"))}");
+    Console.WriteLine("Последние доставки:");
+    foreach (var delivery in status.LastDeliveries)
     {
-        Console.WriteLine("Синхронизация не потребовалась: Primary = Replica");
-        return;
-    }
-
-    Console.WriteLine($"Синхронизация {result.Source} → {result.Target} выполнена");
-    Console.WriteLine("Расхождения до синхронизации:");
-    foreach (var difference in result.DifferencesBefore)
-    {
-        Console.WriteLine($"  - {difference}");
-    }
-
-    Console.WriteLine(result.ConsistentAfter ? "После синхронизации: Primary = Replica" : "После синхронизации копии отличаются!");
-}
-
-static void PrintReplicationStatus(ReplicationStatusDto status)
-{
-    foreach (var instance in new[] { status.Primary, status.Replica })
-    {
-        var line = $"{instance.Name}: {instance.State.ToString().ToUpperInvariant()}";
-        if (instance.SeatStatus is not null)
-        {
-            line += $" | место: {instance.SeatStatus}";
-        }
-
-        if (instance.FreeSeats is not null)
-        {
-            line += $" | свободно мест: {instance.FreeSeats} | билетов: {instance.TicketCount}";
-        }
-
-        if (instance.NeedsSync)
-        {
-            line += " | требует синхронизации";
-        }
-
-        Console.WriteLine(line);
-    }
-
-    Console.WriteLine($"Активный экземпляр: {status.ActiveInstance ?? "нет (оба недоступны)"}");
-    Console.WriteLine(status.Consistent switch
-    {
-        true => "Согласованность: Primary = Replica",
-        false => "Согласованность: ЕСТЬ РАСХОЖДЕНИЯ",
-        null => "Согласованность: не проверить (экземпляр недоступен)"
-    });
-
-    foreach (var difference in status.Differences)
-    {
-        Console.WriteLine($"  - {difference}");
+        Console.WriteLine($"  {delivery}");
     }
 }
