@@ -1,14 +1,14 @@
-# TicketSales — ЛР №6: взаимодействие компонентов по модели Pub/Sub
+# TicketSales — ЛР №7: выбор лидера и консенсус в распределённой системе
 
-Вариант 6, **продажа билетов**:
+Вариант 6, **продажа билетов**. Значение, о котором договариваются узлы, — **ReservationStatus** билета
+(`Purchased` / `Cancelled`).
 
-| Основное событие | Дополнительные события | Subscriber |
-| --- | --- | --- |
-| `TicketPurchased` | `SeatReserved`, `TicketCancelled` | `Logger`, `SeatService`, `NotificationService` и новый `AnalyticsService` |
+Проект продолжает ЛР №6: клиент-сервер по TCP, PostgreSQL Primary/Replica и Pub/Sub. В сервер добавлен кластер
+из пяти узлов. Узлы выбирают лидера, обнаруживают отказ через heartbeat, повторно выбирают лидера и голосуют
+за значение, которое предлагает лидер. Решение принимается только большинством (Majority = 3 из 5).
 
-Проект продолжает ЛР №5: клиент-сервер по TCP и PostgreSQL Primary/Replica. После успешной операции предметной области
-сервер формирует событие и передаёт его в Publisher. Publisher отправляет событие в Broker, а Broker доставляет его подписчикам.
-Промышленные брокеры (Kafka, RabbitMQ) не используются: всё написано на C#.
+Полные Paxos, Raft и Zab не реализуются. Реализована простая модель из ТЗ:
+**выбор лидера → обнаружение отказа → повторный выбор → голосование → консенсус**.
 
 ## Переключение между лабораторными
 
@@ -20,7 +20,8 @@ git checkout claude-tech-lab2   # ЛР №2 — асинхронная обра�
 git checkout claude-tech-lab3   # ЛР №3 — lock / SemaphoreSlim, синхронизация времени
 git checkout claude-tech-lab4   # ЛР №4 — PostgreSQL, транзакции
 git checkout claude-tech-lab5   # ЛР №5 — репликация, Failover, Recovery
-git checkout claude-tech-lab6   # ЛР №6 — Pub/Sub (этот README)
+git checkout claude-tech-lab6   # ЛР №6 — Pub/Sub
+git checkout claude-tech-lab7   # ЛР №7 — выбор лидера и консенсус (этот README)
 git checkout master             # вернуться к последнему состоянию
 ```
 
@@ -28,24 +29,28 @@ git checkout master             # вернуться к последнему с�
 
 ```bash
 docker compose up -d                                 # PostgreSQL Primary :5433, Replica :5434
-dotnet run --project src/TicketSales.Server -- 5050  # сервер
+dotnet run --project src/TicketSales.Server -- 5050  # сервер: 5 узлов, выборы при старте, heartbeat каждые 3 с
 dotnet run --project src/TicketSales.Client          # клиент (можно запустить несколько)
-dotnet run --project src/TicketSales.PubSubDemo      # итоговый эксперимент одной командой (сбрасывает БД)
-dotnet test                                          # тесты
+dotnet run --project src/TicketSales.ConsensusDemo   # все эксперименты одной командой (БД не нужна)
+dotnet test                                          # тесты (интеграционные требуют docker compose)
 ```
 
-Меню клиента (пункты ЛР №6 — 7–11):
+Меню клиента (пункты ЛР №7 — 7–11):
 
 ```
-1. Список событий           7. Состояние Pub/Sub (Broker, Subscriber, очередь, статистика)
-2. Забронировать место      8. Отказ / восстановление Subscriber
-3. Купить билет             9. Отказ / восстановление Broker
-4. Отменить билет           10. Подписать Subscriber на событие
-5. Локальное время          11. Временные ошибки Subscriber (повторная доставка)
+1. Список событий           7. Состояние кластера (узлы, лидер, Majority, журнал)
+2. Забронировать место      8. Отказ / восстановление узла, голос NO
+3. Купить билет             9. Проверка heartbeat (обнаружение отказа)
+4. Отменить билет           10. Запустить выбор лидера
+5. Локальное время          11. Предложить ReservationStatus билета (голосование узлов)
 6. Синхронизировать время   0. Выход
 ```
 
-Все журналы ниже — реальный вывод `TicketSales.PubSubDemo`.
+Сценарий для защиты через клиент: `2` (забронировать место, получить TicketId) → `7` (Node 5 — LEADER) →
+`8` (Node 5 → FAILED) → `9` (heartbeat: Node 5 NO RESPONSE, Node 4 — LEADER) → `11` (TicketId, Purchased:
+CONSENSUS ACHIEVED, билет куплен) → `8` (Node 4 и Node 3 → FAILED) → `11` (CONSENSUS NOT ACHIEVED, билет не изменён).
+
+Все журналы ниже — реальный вывод `TicketSales.ConsensusDemo`.
 
 ---
 
@@ -53,559 +58,622 @@ dotnet test                                          # тесты
 
 ## 1. Архитектура приложения
 
-**Что.** К архитектуре ЛР №5 добавлен слой событий:
+**Что.** К архитектуре ЛР №6 добавлен кластер узлов, который согласует изменение ReservationStatus:
 
 ```
-Client 1..N ──TCP/JSON──▶ Server (ClientSession → OperationDispatcher → ReplicatedTicketSalesService)
-                                   │ 1. операция на Primary/Replica (ЛР №5)
-                                   │ 2. new PubSubEvent(...)
-                                   ▼
-                               Publisher ──▶ Broker-1 (основной)  ─┐
-                                        └──▶ Broker-2 (резервный) ─┤ подписки, очередь, повторы
-                                                                   ▼
-                     Logger · SeatService · NotificationService · AnalyticsService
+Client 1..N ──TCP/JSON──▶ Server (ClientSession → OperationDispatcher)
+                              │
+                              ├─ ProposeReservationStatus ─▶ NodeCluster.ProposeAsync
+                              │                                 │ Leader → PROPOSE → Followers → YES / NO / NO RESPONSE
+                              │                                 │ YES ≥ Majority ?
+                              │                                 ▼
+                              │                      ACHIEVED → BuyTicket / CancelTicket (Primary/Replica, ЛР №5)
+                              │                      NOT ACHIEVED → ошибка CONSENSUS_NOT_ACHIEVED, данные не меняются
+                              │
+                              └─ фоновый heartbeat (3 с): отказ лидера → повторные выборы
+
+NodeCluster: Node 1 · Node 2 · Node 3 · Node 4 · Node 5  ⇄  ClusterNetwork (сообщения между узлами)
 ```
 
 **Где в коде.**
 
 | Компонент | Файл |
 | --- | --- |
-| Event | [PubSub/PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs) |
-| Publisher | [PubSub/Publisher.cs](src/TicketSales.Server/PubSub/Publisher.cs) |
-| Broker, очередь, повторы | [PubSub/Broker.cs](src/TicketSales.Server/PubSub/Broker.cs) |
-| Subscriber | [PubSub/Subscriber.cs](src/TicketSales.Server/PubSub/Subscriber.cs) |
-| Сборка системы | [PubSub/PubSubSystem.cs](src/TicketSales.Server/PubSub/PubSubSystem.cs) |
-| Публикация из сервера | [ReplicatedTicketSalesService.cs:52](src/TicketSales.Server/Domain/Services/ReplicatedTicketSalesService.cs#L52) |
-| Операции протокола | [Handlers/PubSubHandlers.cs](src/TicketSales.Server/Dispatching/Handlers/PubSubHandlers.cs) |
-| DTO | [Shared/Dto/PubSubDtos.cs](src/TicketSales.Shared/Dto/PubSubDtos.cs) |
+| Узел | [Cluster/ClusterNode.cs](src/TicketSales.Server/Cluster/ClusterNode.cs) |
+| Кластер: выборы, heartbeat, голосование | [Cluster/NodeCluster.cs](src/TicketSales.Server/Cluster/NodeCluster.cs) |
+| Сообщения, предложение | [Cluster/ClusterMessage.cs](src/TicketSales.Server/Cluster/ClusterMessage.cs) |
+| Обмен сообщениями | [Cluster/ClusterNetwork.cs](src/TicketSales.Server/Cluster/ClusterNetwork.cs) |
+| Журнал | [Cluster/ClusterLog.cs](src/TicketSales.Server/Cluster/ClusterLog.cs) |
+| AVAILABLE / FAILED, LEADER / FOLLOWER | [Shared/Models/NodeState.cs](src/TicketSales.Shared/Models/NodeState.cs) |
+| Операции протокола | [Handlers/ClusterHandlers.cs](src/TicketSales.Server/Dispatching/Handlers/ClusterHandlers.cs) |
+| DTO | [Shared/Dto/ClusterDtos.cs](src/TicketSales.Shared/Dto/ClusterDtos.cs) |
+| Запуск кластера в сервере | [Server/Program.cs:47](src/TicketSales.Server/Program.cs#L47) |
+| Демо экспериментов | [ConsensusDemo/Program.cs](src/TicketSales.ConsensusDemo/Program.cs) |
 
-**Как работает.** Каждая операция ЛР №5 выполняется как раньше. После успеха сервер вызывает только
-`Publisher.Publish(event)`; о подписчиках он ничего не знает. Через протокол доступны новые операции:
+**Как работает.** Узлы живут внутри процесса сервера и общаются только сообщениями через `ClusterNetwork`.
+Прямых вызовов чужого состояния нет. Новые операции протокола:
 
-- `GetPubSubStatus` — состояние Broker и Subscriber, очередь, статистика;
-- `SetPubSubAvailability { Component, Available, TransientFailures }` — моделирование отказа;
-- `Subscribe { Subscriber, EventType }` — регистрация подписки.
+- `GetClusterStatus` — узлы, лидер, Term, Majority, последние 20 строк журнала;
+- `SetNodeState { NodeId, Available, VotesNo }` — отказ / восстановление узла, модель несогласия;
+- `CheckHeartbeat` — ручная проверка доступности;
+- `StartElection` — ручной запуск выборов;
+- `ProposeReservationStatus { TicketId, Status }` — операция клиента, которая приводит к предложению изменения.
 
-## 2. Publisher
+Операции ЛР №1–6 работают как раньше.
 
-**Что.** Компонент, который принимает событие от сервера и передаёт его в Broker.
+## 2. 5 узлов
 
-**Где.** [Publisher.cs:19](src/TicketSales.Server/PubSub/Publisher.cs#L19), метод `Publish`.
+**Что.** Кластер из пяти узлов: Node 1 … Node 5.
+
+**Где.** [NodeCluster.cs:40](src/TicketSales.Server/Cluster/NodeCluster.cs#L40) `NodeCluster.Create(size = 5)`,
+конструктор узла — [ClusterNode.cs:24](src/TicketSales.Server/Cluster/ClusterNode.cs#L24).
+
+**Как работает.** Каждый узел имеет всё, что требует ТЗ:
+
+| Требование | Реализация в `ClusterNode` |
+| --- | --- |
+| уникальный идентификатор | `Id` |
+| состояние | `Status` (AVAILABLE / FAILED) |
+| роль | `Role` (LEADER / FOLLOWER), `LeaderId`, `Term` |
+| информация о других узлах | `Peers` и `KnownStatusOf(peer)` — последний известный статус каждого соседа |
+| отправка сообщений | `SendAsync`, `SendHeartbeatAsync` |
+| приём сообщений | `Receive` |
+| изменение состояния | `Fail`, `Recover`, `ApplyCoordinator`, `Vote`, `Commit` |
+
+## 3. Уникальные ID узлов
+
+**Что.** ID — положительное целое число, повтор запрещён.
+
+**Где.** [ClusterNode.cs:24](src/TicketSales.Server/Cluster/ClusterNode.cs#L24) (ID > 0),
+[ClusterNetwork.cs:23](src/TicketSales.Server/Cluster/ClusterNetwork.cs#L23) `Register`.
+
+**Как работает.** При создании кластера каждый узел регистрируется в `ClusterNetwork`. Словарь
+`Id → узел` не принимает второй узел с тем же ID: `ArgumentException("Node 2 уже существует...")`.
+ID используется и как адрес сообщения, и как критерий выбора лидера.
+
+## 4. Состояния AVAILABLE / FAILED
+
+**Что.** `enum NodeStatus { Available, Failed }`.
+
+**Где.** [NodeState.cs](src/TicketSales.Shared/Models/NodeState.cs), переходы —
+[ClusterNode.cs:66](src/TicketSales.Server/Cluster/ClusterNode.cs#L66) `Fail()`,
+[ClusterNode.cs:75](src/TicketSales.Server/Cluster/ClusterNode.cs#L75) `Recover()`,
+моделирование — [NodeCluster.cs:224](src/TicketSales.Server/Cluster/NodeCluster.cs#L224) `SetNodeStateAsync`.
+
+**Как работает.** Отказ моделируется прекращением ответов. Узел FAILED:
+- не отвечает на сообщения: `ClusterNetwork` ждёт таймаут и возвращает отправителю `NO RESPONSE`;
+- не обрабатывает сообщения, даже если они пришли напрямую: `Receive` возвращает `Error`;
+- не может голосовать: `Vote` бросает исключение.
+
+После `Recover()` узел снова AVAILABLE, но становится FOLLOWER и не знает лидера до новых выборов.
+
+## 5. Роли Leader / Follower
+
+**Что.** `enum NodeRole { Follower, Leader }`.
+
+**Где.** [NodeState.cs](src/TicketSales.Shared/Models/NodeState.cs), роль назначается в
+[ClusterNode.cs:132](src/TicketSales.Server/Cluster/ClusterNode.cs#L132) `ApplyCoordinator`.
+
+**Как работает.** Роль меняется только сообщением `COORDINATOR` с результатом выборов: узел с `Id == LeaderId`
+становится LEADER, остальные — FOLLOWER.
+
+- **Leader** координирует выборы после отказа, предлагает значение, рассылает PROPOSE, собирает и считает голоса,
+  определяет большинство, объявляет результат и рассылает COMMIT.
+- **Follower** получает сообщения, отвечает на heartbeat (`ALIVE`), участвует в выборах (отвечает на `ELECTION`),
+  принимает предложение, отдаёт голос и сообщает своё состояние (`GetClusterStatus`).
+
+Узел FAILED в статусе показывается без роли («—»), а лидер ищется только среди доступных узлов
+([NodeCluster.cs:54](src/TicketSales.Server/Cluster/NodeCluster.cs#L54)).
+
+## 6. Механизм выбора лидера
+
+**Что.** Выборы по сообщениям ELECTION / ALIVE / COORDINATOR (упрощённый Bully-алгоритм).
+
+**Где.** [NodeCluster.cs:67](src/TicketSales.Server/Cluster/NodeCluster.cs#L67) `ElectAsync`.
 
 **Как работает.**
-- Перебирает Broker по порядку: первый доступный принимает событие.
-- Возвращает `PublishResult(Success, Broker, Error, Delivery)`. `Delivery` — задача доставки, которую сервер не ждёт.
-- Исключений наружу не выбрасывает: недоступный Broker или некорректное событие превращаются в `Success=false` с понятным `Error` и пишутся в журнал.
-- В коде Publisher нет ни одного типа Subscriber.
+1. Инициатор (доступный узел, обнаруживший проблему) пишет `Election started`.
+2. Инициатор параллельно отправляет `ELECTION` всем остальным узлам.
+3. Ответившие `ALIVE` — кандидаты (`Node N AVAILABLE`). Не ответившие исключаются (`Node 5 excluded`).
+4. Лидер — кандидат с максимальным ID. Новый `Term` = максимальный известный Term + 1.
+5. Инициатор применяет результат у себя и рассылает `COORDINATOR(LeaderId, Term)` всем доступным узлам.
+6. В журнал пишутся `Node N elected as LEADER`, роли всех узлов и проверка `LEADER среди доступных узлов = 1`.
 
-## 3. Broker
+Выборы выполняются под `SemaphoreSlim` ([NodeCluster.cs:69](src/TicketSales.Server/Cluster/NodeCluster.cs#L69)),
+поэтому одновременные запуски выполняются по очереди и не создают двух лидеров. Сообщение COORDINATOR со
+старым Term узел отклоняет. Это гарантирует, что одновременно существует только один LEADER.
 
-**Что.** Принимает события, хранит подписки, определяет получателей, доставляет события, обрабатывает ошибки и хранит очередь.
+```
+[23:20:42.244] [Server] Election started (инициатор Node 1)
+[23:20:42.252] [Server] Node 1 AVAILABLE
+[23:20:42.252] [Server] Node 2 AVAILABLE
+[23:20:42.252] [Server] Node 3 AVAILABLE
+[23:20:42.252] [Server] Node 4 AVAILABLE
+[23:20:42.252] [Server] Node 5 AVAILABLE
+[23:20:42.256] [Server] Node 5 elected as LEADER (Term 1)
+[23:20:42.256] [Server] Node 1 → AVAILABLE, FOLLOWER
+[23:20:42.256] [Server] Node 2 → AVAILABLE, FOLLOWER
+[23:20:42.256] [Server] Node 3 → AVAILABLE, FOLLOWER
+[23:20:42.256] [Server] Node 4 → AVAILABLE, FOLLOWER
+[23:20:42.256] [Server] Node 5 → AVAILABLE, LEADER
+[23:20:42.256] [Server] Проверка: LEADER среди доступных узлов = 1
+```
 
-**Где.** [Broker.cs:83](src/TicketSales.Server/PubSub/Broker.cs#L83) `Publish`, [Broker.cs:134](src/TicketSales.Server/PubSub/Broker.cs#L134) `DeliverAsync`.
+## 7. Правило выбора лидера
+
+**Что.** Лидером становится **доступный узел с наибольшим ID**.
+
+**Где.** [NodeCluster.cs:111](src/TicketSales.Server/Cluster/NodeCluster.cs#L111) `var leaderId = candidates.Max();`
+
+**Как работает.** В `candidates` попадают только инициатор и узлы, ответившие `ALIVE`. Поэтому недоступный
+узел выбрать нельзя, даже если у него максимальный ID. При 5/5 лидер — Node 5, без Node 5 — Node 4,
+без Node 4 и 5 — Node 3, без Node 3–5 — Node 2. Когда узел с большим ID восстанавливается, запускаются новые
+выборы, и он снова становится лидером.
+
+## 8. Heartbeat
+
+**Что.** Сообщение `HEARTBEAT` и ответ `ALIVE`.
+
+**Где.** [ClusterNode.cs:89](src/TicketSales.Server/Cluster/ClusterNode.cs#L89) `SendHeartbeatAsync`,
+ответ — [ClusterNode.cs:218](src/TicketSales.Server/Cluster/ClusterNode.cs#L218),
+периодическая проверка — [NodeCluster.cs:200](src/TicketSales.Server/Cluster/NodeCluster.cs#L200) `StartMonitoring`.
+
+**Как работает.** Узел отправляет `HEARTBEAT` и ждёт ответ. `ALIVE` означает, что сосед доступен. Если узел FAILED,
+`ClusterNetwork` ждёт `Timeout` (1 с в сервере, 0,5 с в демо, 20 мс в тестах) и сообщает `NO RESPONSE`
+([ClusterNetwork.cs:38](src/TicketSales.Server/Cluster/ClusterNetwork.cs#L38)).
+
+Сервер запускает проверку каждые 3 секунды ([Program.cs:64](src/TicketSales.Server/Program.cs#L64)) и в этом режиме
+пишет в журнал только изменения. Пункт меню 9 (`CheckHeartbeat`) выполняет проверку сразу и пишет в журнал каждое сообщение.
+
+## 9. Обнаружение отказа
+
+**Что.** Простой failure detector: нет ответа на heartbeat за таймаут — узел FAILED.
+
+**Где.** [NodeCluster.cs:150](src/TicketSales.Server/Cluster/NodeCluster.cs#L150) `DetectFailuresAsync`.
 
 **Как работает.**
-1. Если Broker недоступен, выбрасывается `BrokerUnavailableException`.
-2. `e.Validate()` проверяет событие, в журнал пишется `EVENT RECEIVED`.
-3. Получатели берутся из словаря `тип события → List<Subscriber>`.
-4. Доставка запускается в фоне через `Task.Run` и `Task.WhenAll`.
-5. Ошибка доставки одному Subscriber перехватывается внутри `DeliverAsync` и не влияет на остальных.
+1. Follower с наименьшим ID (Node 1) отправляет `HEARTBEAT` лидеру.
+2. Если ответа нет, в журнал пишутся `HEARTBEAT TIMEOUT` и `FAILED`, затем запускаются новые выборы.
+3. Если лидер жив, он сам отправляет heartbeat всем followers.
+4. Если follower перестал отвечать, пишется `Node N → HEARTBEAT TIMEOUT` / `FAILED`. Если снова отвечает — `AVAILABLE`.
 
-## 4. Subscriber
+Каждый узел хранит последний известный статус соседей (`KnownStatusOf`).
 
-**Что.** Абстрактный класс `Subscriber` и четыре реализации:
+## 10. Отказ текущего лидера
 
-| Subscriber | Назначение | Задержка |
+**Что.** Моделирование: `SetNodeState { NodeId = 5, Available = false }` (меню 8).
+
+**Где.** [NodeCluster.cs:224](src/TicketSales.Server/Cluster/NodeCluster.cs#L224).
+
+**Как работает.** Node 5 перестаёт отвечать, но остальные узлы этого ещё не знают: Node 5 остаётся для них лидером.
+Отказ обнаруживается только через heartbeat (раздел 9). После обнаружения кластер выбирает нового лидера. Если клиент
+предложит значение до проверки, `ProposeAsync` сначала сам выполнит проверку и перевыборы
+([NodeCluster.cs:346](src/TicketSales.Server/Cluster/NodeCluster.cs#L346) `EnsureLeaderAsync`). Сервер при этом не падает.
+
+## 11. Повторный выбор лидера
+
+**Что.** После обнаружения отказа запускаются новые выборы (раздел 6), инициатор — узел, обнаруживший отказ.
+
+**Где.** [NodeCluster.cs:168](src/TicketSales.Server/Cluster/NodeCluster.cs#L168).
+
+**Как работает.** До отказа: Node 1–4 — FOLLOWER, Node 5 — LEADER. После отказа: Node 1–3 — FOLLOWER,
+Node 4 — LEADER, Node 5 — FAILED.
+
+```
+[23:20:42.265] [Server] Node 5 → FAILED (смоделирован отказ, роль была LEADER)
+[23:20:42.266] [Server] Node 1 → HEARTBEAT → Node 5
+[23:20:42.768] [Server] Node 5 → NO RESPONSE
+[23:20:42.768] [Server] Node 5 → HEARTBEAT TIMEOUT
+[23:20:42.768] [Server] Node 5 → FAILED (LEADER недоступен)
+[23:20:42.768] [Server] New election started (инициатор Node 1)
+[23:20:43.269] [Server] Node 1 AVAILABLE
+[23:20:43.269] [Server] Node 2 AVAILABLE
+[23:20:43.269] [Server] Node 3 AVAILABLE
+[23:20:43.269] [Server] Node 4 AVAILABLE
+[23:20:43.269] [Server] Node 5 excluded (FAILED, нет ответа)
+[23:20:43.269] [Server] Node 4 elected as LEADER (Term 2)
+[23:20:43.269] [Server] Node 1 → AVAILABLE, FOLLOWER
+[23:20:43.269] [Server] Node 2 → AVAILABLE, FOLLOWER
+[23:20:43.269] [Server] Node 3 → AVAILABLE, FOLLOWER
+[23:20:43.269] [Server] Node 4 → AVAILABLE, LEADER
+[23:20:43.270] [Server] Node 5 → FAILED
+[23:20:43.270] [Server] Проверка: LEADER среди доступных узлов = 1
+```
+
+## 12. Предложение значения
+
+**Что.** `Proposal(Version, TicketId, Status)` — новый ReservationStatus билета.
+
+**Где.** [ClusterMessage.cs:20](src/TicketSales.Server/Cluster/ClusterMessage.cs#L20),
+[NodeCluster.cs:251](src/TicketSales.Server/Cluster/NodeCluster.cs#L251) `ProposeAsync`,
+операция клиента — [ClusterHandlers.cs:87](src/TicketSales.Server/Dispatching/Handlers/ClusterHandlers.cs#L87).
+
+**Как работает.** Клиент выбирает пункт 11, вводит TicketId и статус. Сервер передаёт предложение лидеру.
+- `Version` = последняя принятая лидером версия + 1, аналог ConfigurationVersion из ТЗ.
+- Лидер пишет `Leader Node N → PROPOSE Version=…, Ticket …: ReservationStatus=…`.
+- Затем параллельно (`Task.WhenAll`) отправляет `PROPOSE` каждому остальному узлу: `Leader Node 5 → Node 1: PROPOSE` и т. д.
+
+Предложения выполняются под отдельным `SemaphoreSlim`, поэтому одновременные запросы клиентов получают разные версии.
+
+## 13. Голосование узлов
+
+**Что.** Ответ `VOTE` с `YES` или `NO` и причиной.
+
+**Где.** [ClusterNode.cs:153](src/TicketSales.Server/Cluster/ClusterNode.cs#L153) `Vote`,
+приём PROPOSE — [ClusterNode.cs:227](src/TicketSales.Server/Cluster/ClusterNode.cs#L227).
+
+**Как работает.** Узел голосует **YES**, если одновременно:
+- он не в режиме несогласия (`VotesNo`, меню 8 → 3);
+- версия новее уже принятой (защита от повторного или устаревшего предложения);
+- статус — допустимый целевой ReservationStatus: `Purchased` или `Cancelled`. Вернуть билет в `Reserved` нельзя.
+
+Иначе узел голосует **NO** и указывает причину. Узел принимает PROPOSE только от своего текущего лидера с актуальным Term.
+Лидер тоже голосует ([NodeCluster.cs:274](src/TicketSales.Server/Cluster/NodeCluster.cs#L274)).
+Недоступный узел не отвечает, его результат — `NO RESPONSE`.
+
+```
+[23:20:43.778] [Server] Node 3 → голосование: всегда NO
+[23:20:43.778] [Server] Leader Node 4 → PROPOSE Version=3, Ticket 3: ReservationStatus=Cancelled
+[23:20:43.778] [Server] Leader Node 4 → Node 1: PROPOSE
+[23:20:43.778] [Server] Leader Node 4 → Node 2: PROPOSE
+[23:20:43.778] [Server] Leader Node 4 → Node 3: PROPOSE
+[23:20:43.778] [Server] Leader Node 4 → Node 5: PROPOSE
+[23:20:44.280] [Server] Node 1 → YES
+[23:20:44.281] [Server] Node 2 → YES
+[23:20:44.281] [Server] Node 3 → NO (узел не согласен)
+[23:20:44.281] [Server] Node 4 → YES
+[23:20:44.281] [Server] Node 5 → NO RESPONSE
+[23:20:44.281] [Server] YES = 3, NO = 1, NO RESPONSE = 1
+[23:20:44.281] [Server] Majority = 3 (из 5)
+[23:20:44.282] [Server] CONSENSUS ACHIEVED: Version=3, Ticket 3: ReservationStatus=Cancelled принято
+```
+
+## 14. Подсчёт голосов
+
+**Что.** Лидер собирает ответы всех узлов и считает YES, NO и NO RESPONSE.
+
+**Где.** [NodeCluster.cs:297](src/TicketSales.Server/Cluster/NodeCluster.cs#L297).
+
+**Как работает.**
+- Ответы собираются через `Task.WhenAll`, затем пишутся в журнал в порядке ID.
+- `YES` и `NO` — ответы `VOTE`.
+- `NO RESPONSE` — узел не ответил за таймаут; сюда же попадает некорректный ответ (`INVALID`).
+- Каждый узел учитывается ровно один раз, потому что ключ словаря `Votes` — ID узла.
+- Результат возвращается клиенту в `ConsensusResultDto`: голоса по узлам, YES, NO, NO RESPONSE, Majority, Achieved.
+
+## 15. Определение большинства
+
+**Что.** `Majority = N / 2 + 1`, где N — **общее** число узлов кластера, а не число доступных.
+
+**Где.** [NodeCluster.cs:47](src/TicketSales.Server/Cluster/NodeCluster.cs#L47),
+проверка — [NodeCluster.cs:300](src/TicketSales.Server/Cluster/NodeCluster.cs#L300) `Achieved = Yes >= Majority`.
+
+**Как работает.** Для 5 узлов Majority = 3, для 4 — тоже 3. Считать большинство от доступных узлов нельзя: тогда 2 узла
+из 5 «договорились» бы сами с собой. Если доступно меньше Majority, выборы всё равно выбирают лидера по правилу ТЗ,
+но в журнал пишется `Доступно 2/5 < Majority 3: лидер выбран, но консенсус невозможен`.
+
+| Доступные узлы | Majority | Консенсус |
 | --- | --- | --- |
-| `LoggerSubscriber` («Logger») | пишет событие в журнал | 1 с |
-| `SeatService` | изменяет состояние предметной области (билет → Reserved / Sold / Free) | 3 с |
-| `NotificationService` | формирует уведомление покупателю | 2 с |
-| `AnalyticsService` | собирает статистику по типам и клиентам, данные не меняет | 0,5 с |
+| 5 | 3 | возможен |
+| 4 | 3 | возможен |
+| 3 | 3 | возможен |
+| 2 | 3 | невозможен |
+| 1 | 3 | невозможен |
 
-**Где.** [Subscriber.cs:37](src/TicketSales.Server/PubSub/Subscriber.cs#L37) `HandleAsync`, реализации ниже в том же файле.
+## 16. Успешное достижение консенсуса
 
-**Как работает.** `HandleAsync`:
-1. проверяет `Available`;
-2. ждёт `Delay`;
-3. при необходимости имитирует временную ошибку;
-4. вызывает `Process(e)` и сохраняет событие в `Received`.
+**Что.** `YES ≥ Majority` → `CONSENSUS ACHIEVED`, значение принимается и применяется.
 
-Результат и ошибка возвращаются в Broker: успешное завершение задачи либо исключение.
-
-## 5. Структура Event
-
-**Что.** `PubSubEvent`:
-
-| Поле | Значение |
-| --- | --- |
-| `Id` | Guid |
-| `Type` | тип события |
-| `EntityId` | id места или билета |
-| `ClientId` | `Client N` из `RequestContext` |
-| `Timestamp` | время создания |
-| `Data` | дополнительные данные |
-
-Класс назван `PubSubEvent`, потому что `Event` в проекте — это мероприятие.
-
-**Где.** [PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs). `EventTypes` — три типа, `Validate()` — проверка.
-
-**Как работает.** Какие события создаёт сервер:
-
-| Операция | Событие | EntityId | Data |
-| --- | --- | --- | --- |
-| ReserveSeat | `SeatReserved` | id места | `TicketId`, `EventId` |
-| BuyTicket | `TicketPurchased` | id билета | `Amount` |
-| CancelTicket | `TicketCancelled` | id билета | — |
-
-## 6. Механизм регистрации подписки
-
-**Что.** `Subscribe(subscriber, eventType)`.
-
-**Где.** [Broker.cs:41](src/TicketSales.Server/PubSub/Broker.cs#L41) и [PubSubSystem.cs:50](src/TicketSales.Server/PubSub/PubSubSystem.cs#L50).
+**Где.** [NodeCluster.cs:311](src/TicketSales.Server/Cluster/NodeCluster.cs#L311) (COMMIT),
+применение к данным — [ClusterHandlers.cs:115](src/TicketSales.Server/Dispatching/Handlers/ClusterHandlers.cs#L115).
 
 **Как работает.**
-- `PubSubSystem.Subscribe` ищет Subscriber в каталоге. Если его там нет — `NOT_FOUND «Subscriber не зарегистрирован»`.
-- Затем подписывает его на всех Broker.
-- `Broker.Subscribe` проверяет тип события (неизвестный тип — `VALIDATION_ERROR`) и добавляет Subscriber в список под `lock`.
+1. Лидер фиксирует значение у себя и рассылает `COMMIT` ответившим узлам. Каждый узел сохраняет его в `Committed`.
+2. Только после этого сервер выполняет операцию предметной области: `Purchased` → `BuyTicket`, `Cancelled` → `CancelTicket`.
+3. Операция проходит через Primary/Replica из ЛР №5.
 
-Начальные подписки создаёт `PubSubSystem.Create`:
-
-```
-Broker-1 → SUBSCRIBE Logger: TicketPurchased        Broker-1 → SUBSCRIBE SeatService: SeatReserved
-Broker-1 → SUBSCRIBE NotificationService: TicketPurchased  ... (то же на Broker-2)
-```
-
-| Subscriber | TicketPurchased | SeatReserved | TicketCancelled |
-| --- | --- | --- | --- |
-| Logger | ✓ | ✓ | ✓ |
-| SeatService | ✓ | ✓ | ✓ |
-| NotificationService | ✓ | — | ✓ |
-| AnalyticsService | подписывается во время работы (п. 18) | | |
-
-## 7. Публикация события
-
-**Что.** Путь Server → Publisher → Broker.
-
-**Где.** [ReplicatedTicketSalesService.cs:52](src/TicketSales.Server/Domain/Services/ReplicatedTicketSalesService.cs#L52) `PublishAsync`.
-
-**Как работает.** Событие публикуется после успешной операции и репликации, то есть только для изменений, которые действительно произошли:
+Эксперимент 1 (5/5):
 
 ```
-[10:42:21.050] [Client 1] Server → SeatReserved
-[10:42:21.051] [Client 1] Publisher → PUBLISH SeatReserved(EntityId=1, Client 1)
-[10:42:21.051] [Client 1] Broker-1 → EVENT RECEIVED SeatReserved(EntityId=1, Client 1)
-[10:42:21.051] [Client 1] Broker-1 → получатели SeatReserved: Logger, SeatService
-[10:42:21.051] [Client 1] Publisher → ACCEPTED by Broker-1
-[10:42:21.056] [Client 1] Request → SUCCESS (экземпляр: Primary)
+[23:20:42.259] [Server] Leader Node 5 → PROPOSE Version=1, Ticket 1: ReservationStatus=Purchased
+[23:20:42.260] [Server] Leader Node 5 → Node 1: PROPOSE
+[23:20:42.261] [Server] Leader Node 5 → Node 2: PROPOSE
+[23:20:42.261] [Server] Leader Node 5 → Node 3: PROPOSE
+[23:20:42.261] [Server] Leader Node 5 → Node 4: PROPOSE
+[23:20:42.263] [Server] Node 1 → YES
+[23:20:42.263] [Server] Node 2 → YES
+[23:20:42.263] [Server] Node 3 → YES
+[23:20:42.263] [Server] Node 4 → YES
+[23:20:42.263] [Server] Node 5 → YES
+[23:20:42.263] [Server] YES = 5, NO = 0, NO RESPONSE = 0
+[23:20:42.263] [Server] Majority = 3 (из 5)
+[23:20:42.264] [Server] CONSENSUS ACHIEVED: Version=1, Ticket 1: ReservationStatus=Purchased принято
 ```
 
-## 8. Доставка события Subscriber
+Эксперимент 2 (Node 5 FAILED, 4/5, лидер Node 4 после повторных выборов из раздела 11):
 
-**Что.** Broker вызывает `HandleAsync` каждого подходящего Subscriber.
+```
+[23:20:43.270] [Server] Leader Node 4 → PROPOSE Version=2, Ticket 2: ReservationStatus=Purchased
+[23:20:43.270] [Server] Leader Node 4 → Node 1: PROPOSE
+[23:20:43.270] [Server] Leader Node 4 → Node 2: PROPOSE
+[23:20:43.270] [Server] Leader Node 4 → Node 3: PROPOSE
+[23:20:43.270] [Server] Leader Node 4 → Node 5: PROPOSE
+[23:20:43.776] [Server] Node 1 → YES
+[23:20:43.777] [Server] Node 2 → YES
+[23:20:43.777] [Server] Node 3 → YES
+[23:20:43.777] [Server] Node 4 → YES
+[23:20:43.777] [Server] Node 5 → NO RESPONSE
+[23:20:43.777] [Server] YES = 4, NO = 0, NO RESPONSE = 1
+[23:20:43.777] [Server] Majority = 3 (из 5)
+[23:20:43.777] [Server] CONSENSUS ACHIEVED: Version=2, Ticket 2: ReservationStatus=Purchased принято
+```
 
-**Где.** [Broker.cs:126](src/TicketSales.Server/PubSub/Broker.cs#L126) `DeliverAllAsync` и `DeliverAsync`.
+Эксперимент 3 (Node 4, Node 5 FAILED, 3/5):
+
+```
+[23:20:44.282] [Server] Node 4 → FAILED (смоделирован отказ, роль была LEADER)
+[23:20:44.282] [Server] Node 1 → HEARTBEAT → Node 4
+[23:20:44.786] [Server] Node 4 → NO RESPONSE
+[23:20:44.786] [Server] Node 4 → HEARTBEAT TIMEOUT
+[23:20:44.786] [Server] Node 4 → FAILED (LEADER недоступен)
+[23:20:44.787] [Server] New election started (инициатор Node 1)
+[23:20:45.289] [Server] Node 1 AVAILABLE
+[23:20:45.289] [Server] Node 2 AVAILABLE
+[23:20:45.289] [Server] Node 3 AVAILABLE
+[23:20:45.289] [Server] Node 4 excluded (FAILED, нет ответа)
+[23:20:45.289] [Server] Node 5 excluded (FAILED, нет ответа)
+[23:20:45.289] [Server] Node 3 elected as LEADER (Term 3)
+...
+[23:20:45.290] [Server] Leader Node 3 → PROPOSE Version=4, Ticket 4: ReservationStatus=Purchased
+...
+[23:20:45.791] [Server] Node 1 → YES
+[23:20:45.792] [Server] Node 2 → YES
+[23:20:45.792] [Server] Node 3 → YES
+[23:20:45.792] [Server] Node 4 → NO RESPONSE
+[23:20:45.792] [Server] Node 5 → NO RESPONSE
+[23:20:45.792] [Server] YES = 3, NO = 0, NO RESPONSE = 2
+[23:20:45.792] [Server] Majority = 3 (из 5)
+[23:20:45.792] [Server] CONSENSUS ACHIEVED: Version=4, Ticket 4: ReservationStatus=Purchased принято
+```
+
+## 17. Невозможность достижения консенсуса при отсутствии большинства
+
+**Что.** `YES < Majority` → `CONSENSUS NOT ACHIEVED`, решение не принимается.
+
+**Где.** [NodeCluster.cs:307](src/TicketSales.Server/Cluster/NodeCluster.cs#L307),
+ошибка клиенту — [ClusterHandlers.cs:108](src/TicketSales.Server/Dispatching/Handlers/ClusterHandlers.cs#L108).
 
 **Как работает.**
+- Лидер не отправляет COMMIT, ни один узел не сохраняет значение.
+- Сервер не вызывает BuyTicket / CancelTicket, данные в PostgreSQL не меняются.
+- Клиент получает ошибку `CONSENSUS_NOT_ACHIEVED: YES = 2, Majority = 3, доступно узлов 2/5. Изменение не применено`.
+
+Эксперимент 4 (Node 3, 4, 5 FAILED, 2/5):
 
 ```
-[10:42:21.053] [Client 1] Broker-1 → SeatService SeatReserved (attempt 1)
-[10:42:21.053] [Client 1] Broker-1 → Logger SeatReserved (attempt 1)
-[10:42:22.055] [Client 1] Logger → журнал: SeatReserved(EntityId=1, Client 1) at 10:42:21.050
-[10:42:22.055] [Client 1] Logger → SUCCESS SeatReserved (attempt 1, 1003 ms)
-[10:42:24.057] [Client 1] SeatService → SUCCESS SeatReserved (attempt 1, 3004 ms)
-[10:42:24.058] [Client 1] Broker-1 → ALL DONE SeatReserved: SUCCESS 2/2, 3008 ms от публикации
+[23:20:45.792] [Server] Node 3 → FAILED (смоделирован отказ, роль была LEADER)
+[23:20:45.792] [Server] Node 1 → HEARTBEAT → Node 3
+[23:20:46.293] [Server] Node 3 → NO RESPONSE
+[23:20:46.294] [Server] Node 3 → HEARTBEAT TIMEOUT
+[23:20:46.294] [Server] Node 3 → FAILED (LEADER недоступен)
+[23:20:46.294] [Server] New election started (инициатор Node 1)
+[23:20:46.798] [Server] Node 1 AVAILABLE
+[23:20:46.798] [Server] Node 2 AVAILABLE
+[23:20:46.798] [Server] Node 3 excluded (FAILED, нет ответа)
+[23:20:46.798] [Server] Node 4 excluded (FAILED, нет ответа)
+[23:20:46.798] [Server] Node 5 excluded (FAILED, нет ответа)
+[23:20:46.799] [Server] Node 2 elected as LEADER (Term 4)
+[23:20:46.799] [Server] Node 1 → AVAILABLE, FOLLOWER
+[23:20:46.799] [Server] Node 2 → AVAILABLE, LEADER
+[23:20:46.799] [Server] Node 3 → FAILED
+[23:20:46.799] [Server] Node 4 → FAILED
+[23:20:46.799] [Server] Node 5 → FAILED
+[23:20:46.799] [Server] Доступно 2/5 < Majority 3: лидер выбран, но консенсус невозможен
+[23:20:46.799] [Server] Проверка: LEADER среди доступных узлов = 1
+[23:20:46.799] [Server] Leader Node 2 → PROPOSE Version=5, Ticket 5: ReservationStatus=Purchased
+[23:20:46.799] [Server] Leader Node 2 → Node 1: PROPOSE
+[23:20:46.799] [Server] Leader Node 2 → Node 3: PROPOSE
+[23:20:46.799] [Server] Leader Node 2 → Node 4: PROPOSE
+[23:20:46.799] [Server] Leader Node 2 → Node 5: PROPOSE
+[23:20:47.301] [Server] Node 1 → YES
+[23:20:47.301] [Server] Node 2 → YES
+[23:20:47.301] [Server] Node 3 → NO RESPONSE
+[23:20:47.301] [Server] Node 4 → NO RESPONSE
+[23:20:47.301] [Server] Node 5 → NO RESPONSE
+[23:20:47.301] [Server] YES = 2, NO = 0, NO RESPONSE = 3
+[23:20:47.301] [Server] Majority = 3 (из 5)
+[23:20:47.301] [Server] CONSENSUS NOT ACHIEVED: Version=5, Ticket 5: ReservationStatus=Purchased не принято
 ```
 
-## 9. Несколько Subscriber
+Итог экспериментов (последняя таблица вывода демо):
 
-**Что.** Одно событие `TicketPurchased` получают три Subscriber.
-
-**Где.** Тест `OneEvent_IsDeliveredToAllSubscribers` и шаг 6 в демо.
-
-**Как работает.**
-
-```
-[10:42:24.618] [Client 1] Broker-1 → получатели TicketPurchased: Logger, SeatService, NotificationService
-[10:42:25.620] [Client 1] Logger → SUCCESS TicketPurchased (attempt 1, 1002 ms)
-[10:42:26.622] [Client 1] NotificationService → уведомление покупателю: TicketPurchased, билет 1
-[10:42:26.622] [Client 1] NotificationService → SUCCESS TicketPurchased (attempt 1, 2004 ms)
-[10:42:27.624] [Client 1] SeatService → SUCCESS TicketPurchased (attempt 1, 3005 ms)
-[10:42:27.624] [Client 1] Broker-1 → ALL DONE TicketPurchased: SUCCESS 3/3, 3006 ms от публикации
-```
-
-## 10. Несколько типов событий
-
-**Что.** Три типа событий: `TicketPurchased`, `SeatReserved`, `TicketCancelled`.
-
-**Где.** `EventTypes` в [PubSubEvent.cs](src/TicketSales.Server/PubSub/PubSubEvent.cs). Тесты `SeveralEventTypes_AreRoutedBySubscription` и `NotSubscribedSubscriber_DoesNotReceiveEvent`.
-
-**Как работает.** Каждый Subscriber получает только те события, на которые подписан. Например, `SeatReserved` уходит только Logger и SeatService (список получателей выше), а NotificationService его не получает. В тесте после публикации всех трёх типов у NotificationService в `Received` оказываются ровно `[TicketPurchased, TicketCancelled]`.
-
-## 11. Журнал публикации
-
-**Что.** Записи вида `[время] [клиент] компонент → действие`.
-
-**Где.** `ReplicationLog.Write` из ЛР №5. Записи журнала пишут Server, Publisher и Broker.
-
-**Как работает.** Идентификатор клиента берётся из `RequestContext`. Это `AsyncLocal`, поэтому `Client N` сохраняется и в фоновых задачах доставки. В журнале видны:
-
-- время;
-- клиент;
-- тип события;
-- Publisher;
-- Broker, который принял событие;
-- ошибка публикации (`Publisher → FAIL: …`).
-
-## 12. Журнал доставки
-
-**Что.** Записи `Broker → Subscriber (attempt n)`, `Subscriber → SUCCESS / FAIL / UNAVAILABLE`, `QUEUED`, `REDELIVERY`, `ALL DONE`.
-
-**Где.** `DeliverAsync` и `History` в [Broker.cs](src/TicketSales.Server/PubSub/Broker.cs).
-
-**Как работает.** Каждая доставка сохраняется в `DeliveryResult`:
-
-| Поле | Значение |
-| --- | --- |
-| `Broker` | Broker, который доставлял |
-| `EventType` | тип события |
-| `Subscriber` | получатель |
-| `Status` | результат |
-| `Attempts` | число попыток |
-| `Started`, `Finished` | начало и конец доставки |
-| `Error` | ошибка |
-
-Последние 10 доставок клиент видит в пункте меню 7 «Последние доставки».
-
-## 13. Асинхронная обработка
-
-**Что.** Subscriber обрабатывают событие параллельно и независимо от Publisher и клиента.
-
-**Где.** `Task.Run(() => DeliverAllAsync(...))` в `Broker.Publish` и `Task.WhenAll(... Task.Run(DeliverAsync))`.
-
-**Как работает.** Клиент получает ответ сразу после публикации: `Request → SUCCESS` в 10:42:24.627, а SeatService закончил в 10:42:27.624. Все три Subscriber стартуют в 10:42:24.619. Общее время равно самой долгой обработке (3 с), а не сумме задержек (6 с).
-
-## 14. Искусственная задержка
-
-**Что.** У каждого Subscriber своя задержка `Delay`:
-
-| Subscriber | Задержка |
-| --- | --- |
-| Logger | 1 с |
-| NotificationService | 2 с |
-| SeatService | 3 с |
-| AnalyticsService | 0,5 с |
-
-Пауза между повторами — 0,3 с.
-
-**Где.** `PubSubSystem.Create(delayFactor)`: для тестов `delayFactor = 0`.
-
-**Как работает.** Анализ задержек (Часть 5, Требование 6), событие `TicketPurchased`:
-
-| Subscriber | Задержка | Начало доставки, мс от публикации | Обработка, мс | Завершение, мс от публикации |
+| Эксперимент | Доступно | YES | Majority | Результат |
 | --- | --- | --- | --- | --- |
-| Logger | 1 с | 0 | 1002 | 1002 |
-| NotificationService | 2 с | 0 | 2004 | 2004 |
-| SeatService | 3 с | 0 | 3005 | 3005 |
+| 1. Все узлы доступны | 5/5 | 5 | 3 | CONSENSUS ACHIEVED |
+| 2. Отказ Node 5 | 4/5 | 4 | 3 | CONSENSUS ACHIEVED |
+| Голос NO от Node 3 | 4/5 | 3 | 3 | CONSENSUS ACHIEVED |
+| 3. Отказ Node 4, 5 | 3/5 | 3 | 3 | CONSENSUS ACHIEVED |
+| 4. Отказ Node 3, 4, 5 | 2/5 | 2 | 3 | CONSENSUS NOT ACHIEVED |
+| После восстановления 3, 4, 5 | 5/5 | 5 | 3 | CONSENSUS ACHIEVED |
 
-| Этап | Время |
+**Вывод.** Пока доступно большинство (≥ 3 из 5), кластер переживает отказ лидера и продолжает принимать решения.
+Без большинства лидер существует, но решение не принимается. Это и защищает от расхождения данных:
+две половины кластера не могут одновременно принять разные решения.
+
+## 18. Журнал работы узлов
+
+**Что.** Журнал всех событий кластера.
+
+**Где.** [ClusterLog.cs](src/TicketSales.Server/Cluster/ClusterLog.cs).
+
+**Как работает.** `ClusterLog.Write` выводит строку в консоль сервера в формате `[HH:mm:ss.fff] [клиент] сообщение`
+(общий формат журнала ЛР №5–6) и хранит её в памяти. Последние 20 строк возвращаются клиенту в `GetClusterStatus`.
+
+| Требование ТЗ | Пример строки журнала |
 | --- | --- |
-| Публикация (Publisher → ACCEPTED) | < 1 мс |
-| Ответ клиенту после публикации | 9 мс |
-| Доставка (старт обработки) | ≈ 1 мс |
-| Завершение всех Subscriber | 3006 мс, определяется самым медленным (SeatService) |
+| время | `[23:20:42.244]` |
+| ID, состояние и роль узла | `Node 4 → AVAILABLE, LEADER`, `Node 5 → FAILED` |
+| начало выборов | `Election started`, `New election started` |
+| результат выборов | `Node 4 elected as LEADER (Term 2)` |
+| обнаружение отказа | `Node 5 → NO RESPONSE`, `Node 5 → HEARTBEAT TIMEOUT` |
+| повторный выбор | `New election started (инициатор Node 1)`, `Node 5 excluded` |
+| предлагаемое значение | `Leader Node 4 → PROPOSE Version=3, Ticket 3: ReservationStatus=Cancelled` |
+| голоса | `Node 3 → NO (узел не согласен)`, `Node 5 → NO RESPONSE` |
+| количество YES | `YES = 3, NO = 1, NO RESPONSE = 1` |
+| большинство | `Majority = 3 (из 5)` |
+| результат консенсуса | `CONSENSUS ACHIEVED` / `CONSENSUS NOT ACHIEVED` |
 
-## 15. Отказ одного Subscriber
+## 19. Unit-тесты
 
-**Что.** SeatService становится `UNAVAILABLE`.
+**Где.** [tests/ClusterTests.cs](tests/TicketSales.Tests/ClusterTests.cs) — механизм без БД (таймаут 20 мс);
+[tests/ClusterIntegrationTests.cs](tests/TicketSales.Tests/ClusterIntegrationTests.cs) — через TCP-клиента и PostgreSQL.
 
-**Где.** Флаг `Subscriber.Available`; операция `SetPubSubAvailability` (меню 8).
-
-**Как работает.** `HandleAsync` выбрасывает `SubscriberUnavailableException`:
-
-```
-[10:42:28.142] [Client 2] SeatService → UNAVAILABLE
-```
-
-## 16. Обработка отказа
-
-**Что.** Broker перехватывает ошибку, повторяет доставку, затем ставит событие в очередь.
-
-**Где.** `catch` в [Broker.cs:134](src/TicketSales.Server/PubSub/Broker.cs#L134) `DeliverAsync`.
-
-**Как работает.** В журнале зафиксированы: факт отказа, Subscriber, событие, сообщение об ошибке и результат доставки остальным.
-
-```
-[10:42:28.183] [Client 2] Broker-1 → Logger SeatReserved (attempt 1)
-[10:42:28.183] [Client 2] Broker-1 → SeatService SeatReserved (attempt 1)
-[10:42:28.183] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 1): SeatService недоступен
-[10:42:28.484] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 2): SeatService недоступен
-[10:42:28.785] [Client 2] SeatService → UNAVAILABLE SeatReserved (attempt 3): SeatService недоступен
-[10:42:28.786] [Client 2] Broker-1 → QUEUED SeatReserved для SeatService (в очереди: 1)
-[10:42:29.185] [Client 2] Logger → SUCCESS SeatReserved (attempt 1, 1002 ms)
-[10:42:29.185] [Client 2] Broker-1 → ALL DONE SeatReserved: SUCCESS 1/2, 1002 ms от публикации
-```
-
-## 17. Продолжение работы других Subscriber
-
-**Что.** Logger успешно обработал то же событие, сервер и Broker продолжили работу. Клиент получил `ReserveSeat → OK`.
-
-**Где.** Тест `UnavailableSubscriber_IsQueued_OthersContinue`. После отказа тест публикует ещё одно событие и проверяет, что Broker его доставил.
-
-**Как работает.** Каждая доставка — отдельная задача со своим `try/catch`, поэтому исключение одного Subscriber не прерывает `Task.WhenAll` и доставку остальным.
-
-## 18. Добавление нового Subscriber
-
-**Что.** `AnalyticsService` создан при запуске, но не подписан ни на что. Подписку он получает во время работы по запросу клиента (`Subscribe`, меню 10).
-
-**Где.** [Subscriber.cs:95](src/TicketSales.Server/PubSub/Subscriber.cs#L95), [PubSubHandlers.cs](src/TicketSales.Server/Dispatching/Handlers/PubSubHandlers.cs) `SubscribeHandler`.
-
-**Как работает.** Publisher и сервер не изменялись: тот же объект `Publisher`, тот же вызов `Publish`.
-
-```
-[10:42:33.723] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: TicketPurchased
-[10:42:33.724] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: SeatReserved
-[10:42:33.725] [Client 2] Broker-1 → SUBSCRIBE AnalyticsService: TicketCancelled
-```
-
-## 19. Получение события новым Subscriber
-
-**Что.** После подписки AnalyticsService получает `TicketCancelled`.
-
-**Где.** Тест `NewSubscriber_ReceivesEvent_WithSamePublisher`. До подписки событие не приходит, после — приходит, при этом `Assert.Same(publisher, …)`.
-
-**Как работает.**
-
-```
-[10:42:33.764] [Client 2] Broker-1 → получатели TicketCancelled: Logger, SeatService, NotificationService, AnalyticsService
-[10:42:34.269] [Client 2] AnalyticsService → SUCCESS TicketCancelled (attempt 1, 504 ms)
-[10:42:36.770] [Client 2] Broker-1 → ALL DONE TicketCancelled: SUCCESS 4/4, 3006 ms от публикации
-```
-
-## 20. Сравнение прямого взаимодействия и Pub/Sub
-
-| Критерий | Прямое взаимодействие (Server → Logger, SeatService, …) | Pub/Sub (Server → Publisher → Broker → Subscriber) |
-| --- | --- | --- |
-| Кто о ком знает | Сервер знает каждый компонент, его адрес и интерфейс | Сервер знает только Publisher. Publisher знает только Broker. Subscriber знает только Broker |
-| Где маршрутизация | В коде сервера: последовательность вызовов | В Broker: таблица подписок `тип → Subscriber` |
-| Добавить компонент | Изменить и пересобрать сервер | Зарегистрировать Subscriber и подписку (`Subscribe`); Publisher не меняется |
-| Отказ одного компонента | Исключение в цепочке вызовов, операция может прерваться или зависнуть | Broker фиксирует ошибку, повторяет, ставит в очередь; остальные работают |
-| Время ответа клиенту | Сумма времени всех вызовов (1+2+3 = 6 с) | Время публикации (мс), обработка асинхронна |
-| Связанность | Сильная (compile-time и runtime) | Слабая: общий только контракт события |
-| Минусы | — | Нет мгновенного результата обработки, сложнее отладка, нужна доставка «не менее одного раза» |
-
-## 21. Unit-тесты
-
-**Где.**
-- [tests/TicketSales.Tests/PubSubTests.cs](tests/TicketSales.Tests/PubSubTests.cs): 16 тестов в памяти, без БД.
-- [PubSubIntegrationTests.cs](tests/TicketSales.Tests/PubSubIntegrationTests.cs): 3 теста через TCP и PostgreSQL.
-
-| Требование | Тест |
+| Требование ТЗ | Тест |
 | --- | --- |
-| создание события | `Event_IsCreatedWithTypeEntityTimestampAndData` |
-| некорректное / неизвестное событие | `InvalidOrUnknownEvent_IsRejected` (2 случая) |
-| публикация | `Publish_IsAcceptedByBroker_AndDeliveredToSubscriber` |
-| регистрация Subscriber | `Subscribe_RegistersSubscriptionInEveryBroker` |
-| незарегистрированный Subscriber / неизвестный тип | `Subscribe_UnknownSubscriberOrEventType_Fails`, `UnknownSubscriber_ReturnsError` |
-| получение подписанным | `Publish_IsAcceptedByBroker_AndDeliveredToSubscriber`, `ReserveSeat_PublishesSeatReserved_ToSubscribers` |
-| нет доставки неподписанному | `NotSubscribedSubscriber_DoesNotReceiveEvent` |
-| одно событие нескольким | `OneEvent_IsDeliveredToAllSubscribers` |
-| несколько типов | `SeveralEventTypes_AreRoutedBySubscription` |
-| нет подписчиков | `NoSubscribers_EventIsAcceptedWithoutDeliveries` |
-| ошибка Subscriber, работа Broker продолжается | `UnavailableSubscriber_IsQueued_OthersContinue` |
-| новый Subscriber, получение, Publisher без изменений | `NewSubscriber_ReceivesEvent_WithSamePublisher` |
-| несколько Broker | `FirstBrokerUnavailable_PublisherUsesSecondBroker`, `AllBrokersUnavailable_PublisherReturnsClearError` |
-| очередь | `QueuedEvent_IsNotLost_AndRedeliveredAfterRecovery` |
-| повторная доставка | `TransientFailures_AreRetried_UntilSuccess` |
-| статистика | `Status_ShowsSubscriptionsQueueAndStatistics` |
-| несколько клиентов | `SeveralClients_EventsAreDeliveredPerClient` |
+| создание узлов | `Create_FiveNodes_AvailableFollowersWithUniqueIds` |
+| уникальность ID | `Create_DuplicateId_IsRejected` |
+| определение доступных узлов | `AvailableNodes_ExcludeFailedNodes` |
+| выбор лидера | `Election_AvailableNodeWithMaxId_BecomesLeader` |
+| невозможность выбрать недоступный узел | `Election_FailedNode_CannotBeElected` |
+| обнаружение отказа лидера | `Heartbeat_DetectsLeaderFailure`, `Heartbeat_AllAlive_LeaderDoesNotChange` |
+| повторный выбор лидера | `LeaderFailure_NewLeaderIsElected_AndOnlyOneLeaderExists` |
+| определение большинства | `Majority_IsHalfPlusOne` (5→3, 4→3, 3→2) |
+| положительное голосование | `Vote_AllAgree_PositiveVotesAndConsensus` |
+| отрицательное голосование | `Vote_NodeDisagrees_NegativeVoteIsCounted`, `Vote_InvalidReservationStatus_AllVoteNo_NoConsensus` |
+| достижение консенсуса | `Consensus_IsAchieved_WhileMajorityIsAvailable` (5/5, 4/5, 3/5) |
+| нет консенсуса без большинства | `Consensus_IsNotAchieved_WithoutMajority_AndValueIsNotApplied` |
+| обработка отказа узла | `FailedNode_CannotVote_AndDoesNotProcessMessages`, `UnknownNode_CannotBeContacted` |
+| корректная работа после смены лидера | `AfterLeaderChange_ProposalIsMadeByNewLeader`, `RecoveredNode_RejoinsAndBecomesLeaderAgain` |
+| ошибочные и одновременные сообщения | `InvalidMessages_AreRejectedWithoutChangingState`, `ConcurrentMessagesAndElections_KeepSingleLeader`, `ConcurrentProposals_GetDistinctVersions` |
+| через сервер: решение применяется к билету | `ProposeReservationStatus_WithMajority_IsAppliedToTicket` |
+| через сервер: без большинства билет не меняется | `ProposeReservationStatus_WithoutMajority_ReturnsError_AndTicketIsUnchanged` |
 
-**Как работает.** `dotnet test` — 48 тестов, включая тесты ЛР №1–5. Все проходят.
+Результат `dotnet test` (с `docker compose up -d`): **77 тестов, 0 ошибок** (26 тестов кластера, 3 интеграционных,
+остальные — тесты ЛР №1–6).
 
-## 22. Обработка ошибок
+## 20. Обработка ошибок
 
-| Ситуация | Что происходит |
+**Где.** [ClusterNode.cs:195](src/TicketSales.Server/Cluster/ClusterNode.cs#L195) `Receive`,
+[ClusterNetwork.cs:31](src/TicketSales.Server/Cluster/ClusterNetwork.cs#L31), [NodeCluster.cs](src/TicketSales.Server/Cluster/NodeCluster.cs).
+
+| Ситуация из ТЗ | Как обрабатывается |
 | --- | --- |
-| Сервер недоступен | Клиент: `ServerUnavailableException` → «Не удалось подключиться» (ЛР №1) |
-| Broker недоступен | Publisher переключается на следующий Broker |
-| Все Broker недоступны | `PublishResult.Success = false`, `Publisher → FAIL: Broker недоступен: …`. Операция клиента выполнена, сервер работает |
-| Publisher не может опубликовать (некорректное событие) | `Validate()` → `PublishResult` с ошибкой, без исключения |
-| Subscriber недоступен / ошибка соединения | `UNAVAILABLE`, 3 попытки, затем `QUEUED` |
-| Ошибка обработки события | `FAIL (attempt n): …`, повтор |
-| Несколько Subscriber недоступны | Каждый независимо уходит в очередь, доступные получают событие |
-| Subscriber не зарегистрирован | `NOT_FOUND: Subscriber 'StockService' не зарегистрирован` |
-| Неизвестный тип события | `VALIDATION_ERROR: Неизвестный тип события: 'OrderCreated'` |
-| Нет подписки на тип | `NO SUBSCRIBERS for …`, событие принято без доставок |
-| Некорректный запрос клиента | `VALIDATION_ERROR` / `UNKNOWN_OPERATION` (ЛР №1) |
+| недоступность одного узла | его голос — `NO RESPONSE`, остальные продолжают, консенсус возможен |
+| недоступность нескольких узлов | то же. Если доступно меньше 3 узлов — `CONSENSUS NOT ACHIEVED` |
+| отказ текущего лидера | heartbeat → `HEARTBEAT TIMEOUT` → новые выборы. `ProposeAsync` сам проверяет лидера перед предложением |
+| отсутствие ответа на heartbeat | таймаут `ClusterNetwork.Timeout` → `NO RESPONSE` → узел помечается FAILED |
+| невозможность связаться с узлом | несуществующий ID → `NodeUnreachableException("UNREACHABLE")` внутри кластера и `NOT_FOUND` клиенту |
+| отсутствие большинства | решение не принимается, COMMIT не рассылается, данные не меняются, клиенту — `CONSENSUS_NOT_ACHIEVED` |
+| попытка голосования недоступного узла | узел FAILED не отвечает, на прямое сообщение возвращает `Error`, `Vote()` бросает исключение. Его голос не учитывается |
+| повторный запуск выбора лидера | выборы выполняются под `SemaphoreSlim` по очереди. Устаревший COORDINATOR отклоняется. Всегда один LEADER |
+| получение нескольких сообщений одновременно | `Receive` / `Vote` / `Commit` изменяют состояние узла под `lock`. Предложения выполняются под gate (тест на 50 параллельных heartbeat и 5 параллельных предложений) |
+| ошибочное сообщение от узла | неизвестный отправитель, чужой адресат, PROPOSE / COMMIT не от лидера, устаревший Term, неожиданный тип → ответ `Error` и запись `Node 1 → ERROR: ... отклонено (...)`. Исключение не выбрасывается, состояние не меняется |
+| некорректные данные клиента | TicketId ≤ 0 → `VALIDATION_ERROR`. Ошибка BuyTicket / CancelTicket → обычная ошибка предметной области (ЛР №4–5) |
 
-Пример, когда недоступны оба Broker:
-
-```
-[10:42:44.865] [Client 3] Publisher → PUBLISH SeatReserved(EntityId=5, Client 3)
-[10:42:44.865] [Client 3] Publisher → Broker-1 UNAVAILABLE, переключение на следующий Broker
-[10:42:44.865] [Client 3] Publisher → Broker-2 UNAVAILABLE, переключение на следующий Broker
-[10:42:44.865] [Client 3] Publisher → FAIL: Broker недоступен: Broker-1 недоступен; Broker-2 недоступен
-[10:42:44.866] [Client 3] Request → SUCCESS (экземпляр: Primary)
->>> Клиент: Subscribe → ОШИБКА NOT_FOUND: Subscriber 'StockService' не зарегистрирован
->>> Клиент: Subscribe → ОШИБКА VALIDATION_ERROR: Неизвестный тип события: 'OrderCreated'
-```
-
-## 23. Работа с несколькими Broker
-
-**Что.** `Broker-1` — основной, `Broker-2` — резервный. Подписки регистрируются на обоих.
-
-**Где.** `PubSubSystem.Create`; цикл по Broker в [Publisher.cs](src/TicketSales.Server/PubSub/Publisher.cs).
-
-**Как работает.**
+Сервер не падает ни в одном из случаев. Фоновый heartbeat перехватывает любые исключения и пишет их в журнал.
 
 ```
-[10:42:41.299] [Client 3] Broker-1 → UNAVAILABLE
-[10:42:41.335] [Client 3] Publisher → Broker-1 UNAVAILABLE, переключение на следующий Broker
-[10:42:41.335] [Client 3] Broker-2 → EVENT RECEIVED SeatReserved(EntityId=4, Client 3)
-[10:42:41.335] [Client 3] Publisher → ACCEPTED by Broker-2
-[10:42:44.337] [Client 3] Broker-2 → ALL DONE SeatReserved: SUCCESS 3/3, 3003 ms от публикации
+[23:20:47.302] [Server] Node 1 → ERROR: Propose от Node 9 отклонено (неизвестный отправитель Node 9)
+[23:20:47.302] [Server] Node 1 → ERROR: Coordinator от Node 2 отклонено (устаревший Term 0 < 4)
+[23:20:47.302] [Server] Node 1 → ERROR: Vote от Node 2 отклонено (некорректное сообщение Vote)
+[23:20:47.302] [Server] Node 5 → ERROR: Propose от Node 2 отклонено (узел FAILED и не обрабатывает сообщения)
 ```
 
-**Анализ.**
-- **Зачем несколько Broker:** отказоустойчивость (нет единой точки отказа), распределение нагрузки, разделение по типам событий или регионам.
-- **При отказе одного Broker:** Publisher переключается на другой, и события продолжают доставляться. Но очередь отказавшего Broker недоступна, пока он не восстановится. Если отказали все Broker, событие теряется: операция в БД выполнена, а событие нет. В промышленных системах это решают паттерном Transactional Outbox.
-- **Дополнительные проблемы:**
-  - подписки нужно синхронизировать между Broker;
-  - при повторной публикации в другой Broker возможны дубли, поэтому Subscriber должны быть идемпотентны (по `Event.Id`);
-  - нет глобального порядка событий;
-  - сложнее мониторинг и согласованность очередей.
+## Связь с Paxos, Raft и Zab
 
-## 24. Очередь событий
+| Лабораторная | Raft | Paxos | Zab (ZooKeeper) |
+| --- | --- | --- | --- |
+| Node | сервер | acceptor / proposer / learner | сервер ансамбля |
+| Leader / Follower | Leader / Follower (+ Candidate) | выделенный proposer (Multi-Paxos) | Leader / Follower |
+| Leader election по max ID | голосование за кандидата, случайный election timeout | выбор не обязателен, лидер — оптимизация | выбор узла с самой свежей историей (zxid), затем ID |
+| Term | term | номер предложения (ballot) | epoch |
+| HEARTBEAT | пустой AppendEntries | — | ping лидера |
+| PROPOSE / VOTE | AppendEntries / ответ | Prepare–Promise, Accept–Accepted | PROPOSAL / ACK |
+| Majority | кворум | кворум | кворум |
+| COMMIT | commitIndex | Learn | COMMIT |
+| Version | индекс записи журнала | номер предложения | zxid |
 
-**Что.** `Broker.Pending` (`ConcurrentQueue`) — временное хранилище событий, которые не удалось доставить после всех попыток.
-
-**Где.** `Pending.Enqueue` в `DeliverAsync`, [Broker.cs:109](src/TicketSales.Server/PubSub/Broker.cs#L109) `RedeliverPendingAsync`.
-
-**Как работает.** Когда Subscriber восстанавливается (`SetPubSubAvailability … Available = true`), все Broker повторно доставляют события из очереди. Событие не теряется:
-
-```
-    Broker-1: AVAILABLE, в очереди 1
-    SeatService: UNAVAILABLE, ..., обработано 2
-[10:42:30.703] [Client 2] SeatService → AVAILABLE
-[10:42:30.704] [Client 2] Broker-1 → REDELIVERY из очереди: 1
-[10:42:30.705] [Client 2] Broker-1 → SeatService SeatReserved (attempt 1)
-[10:42:33.709] [Client 2] SeatService → SUCCESS SeatReserved (attempt 1, 3005 ms)
-```
-
-## 25. Повторная доставка
-
-**Что.** До 3 попыток с паузой `RetryDelay` между ними.
-
-**Где.** Цикл `for (attempt…)` в `DeliverAsync`. Временный сбой моделирует `Subscriber.TransientFailures` (меню 11).
-
-**Как работает.** Attempt 1 → FAIL, Attempt 2 → FAIL, Attempt 3 → SUCCESS:
-
-```
-[10:42:37.270] [Client 1] Logger → AVAILABLE, временных ошибок: 2
-[10:42:38.296] [Client 1] Logger → FAIL SeatReserved (attempt 1): Logger: временная ошибка обработки SeatReserved
-[10:42:38.597] [Client 1] Broker-1 → Logger SeatReserved (attempt 2)
-[10:42:39.599] [Client 1] Logger → FAIL SeatReserved (attempt 2): Logger: временная ошибка обработки SeatReserved
-[10:42:39.902] [Client 1] Broker-1 → Logger SeatReserved (attempt 3)
-[10:42:40.903] [Client 1] Logger → SUCCESS SeatReserved (attempt 3, 3608 ms)
-```
-
-## 26. Статистика по событиям
-
-**Что.** `AnalyticsService` — новый тип Subscriber. Он не изменяет данные предметной области и считает события по типам и по клиентам.
-
-**Где.** [Subscriber.cs:95](src/TicketSales.Server/PubSub/Subscriber.cs#L95); выдача через `GetPubSubStatus` (меню 7).
-
-**Как работает.** Состояние в конце демо:
-
-```
-    Logger: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 9
-    SeatService: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 9
-    NotificationService: AVAILABLE, подписки [TicketPurchased, TicketCancelled], обработано 2
-    AnalyticsService: AVAILABLE, подписки [TicketPurchased, SeatReserved, TicketCancelled], обработано 6
-    AnalyticsService по типам: SeatReserved=5, TicketCancelled=1
-    AnalyticsService по клиентам: Client 2=2, Client 1=2, Client 3=2
-```
-
-## 27. Работа с несколькими клиентами
-
-**Что.** Client 1, 2 и 3 одновременно бронируют места 6, 7 и 8.
-
-**Где.** Демо и тест `SeveralClients_EventsAreDeliveredPerClient`.
-
-**Как работает.** Каждый запрос получает своё событие с собственным `ClientId`. Broker доставляет их параллельно, журналы не смешивают клиентов:
-
-```
-[10:42:44.882] [Client 1] Publisher → PUBLISH SeatReserved(EntityId=6, Client 1)
-[10:42:44.894] [Client 2] Publisher → PUBLISH SeatReserved(EntityId=7, Client 2)
-[10:42:44.907] [Client 3] Publisher → PUBLISH SeatReserved(EntityId=8, Client 3)
-[10:42:45.383] [Client 1] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
-[10:42:45.395] [Client 2] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
-[10:42:45.409] [Client 3] AnalyticsService → SUCCESS SeatReserved (attempt 1, 501 ms)
-[10:42:47.883] [Client 1] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
-[10:42:47.894] [Client 2] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
-[10:42:47.908] [Client 3] Broker-1 → ALL DONE SeatReserved: SUCCESS 3/3, 3001 ms от публикации
-```
-
-## Итоговый эксперимент (Часть 4, Требование 3)
-
-`dotnet run --project src/TicketSales.PubSubDemo` выполняет весь цикл:
-
-1. Сервер выполняет операцию.
-2. Формируется Event.
-3. Publisher публикует Event.
-4. Broker принимает Event.
-5. Broker определяет подписчиков.
-6. Несколько Subscriber получают Event.
-7. SeatService становится недоступным.
-8. Остальные Subscriber продолжают работу.
-9. Подключается AnalyticsService.
-10. AnalyticsService получает событие.
-
-Затем демо показывает Часть 5: очередь, повторы, Broker-2, все Broker недоступны, ошибки, несколько клиентов.
+Отличия от реальных алгоритмов:
+- Выборы здесь не требуют большинства, а лидером выбирается узел с максимальным ID. Raft и Zab выбирают лидера только
+  большинством голосов и только из узлов с актуальным журналом.
+- Нет реплицируемого журнала команд: согласуется одно значение за раз.
 
 ---
 
 # Ответы на контрольные вопросы
 
-1. **Что такое Pub/Sub?** Модель взаимодействия, в которой отправитель публикует событие определённого типа, не зная получателей. Посредник (Broker) доставляет событие всем, кто подписался на этот тип.
+1. **Что такое консенсус?** Процесс, при котором узлы распределённой системы приходят к одному согласованному решению.
+   Решение считается принятым, если его поддержало большинство, и после принятия не меняется. Здесь это
+   `CONSENSUS ACHIEVED` для нового ReservationStatus при YES ≥ 3 из 5.
 
-2. **Что такое Publisher?** Компонент, который публикует события. Здесь это `Publisher`: получает событие от сервера и передаёт в Broker. С Subscriber напрямую не общается.
+2. **Для чего необходим консенсус в распределённой системе?** Чтобы узлы, которые работают независимо и могут отказывать,
+   не принимали противоречивых решений. Например, один узел считает билет купленным, а другой — отменённым, или два узла
+   одновременно считают себя лидером. Консенсус даёт одно состояние системы и при этом допускает отказ части узлов.
 
-3. **Что такое Broker?** Посредник. Принимает события, хранит подписки, определяет получателей, доставляет события, обрабатывает ошибки, повторяет доставку и хранит очередь недоставленных событий.
+3. **Что такое Leader?** Узел, которому поручена координация: он предлагает изменения, рассылает их остальным,
+   собирает голоса и объявляет результат. Здесь это доступный узел с максимальным ID. Лидер не единственный узел системы:
+   при его отказе выбирается новый.
 
-4. **Что такое Subscriber?** Компонент, который регистрирует интерес к типам событий и обрабатывает полученные события. Здесь это Logger, SeatService, NotificationService и AnalyticsService.
+4. **Что такое Follower?** Узел, который не координирует, а участвует: отвечает на heartbeat, участвует в выборах,
+   получает предложения лидера, голосует YES/NO и применяет принятые решения (COMMIT).
 
-5. **Что такое Event?** Сообщение о факте, который уже произошёл (например, `SeatReserved`), а не команда. Содержит тип, id объекта, время, клиента и дополнительные данные.
+5. **Что такое Leader election?** Процедура выбора лидера. Здесь инициатор отправляет ELECTION всем узлам, ответившие
+   считаются доступными, лидером становится узел с наибольшим ID, результат рассылается сообщением COORDINATOR.
 
-6. **Как взаимодействуют Publisher и Broker?** Publisher вызывает `Broker.Publish(event)`. Broker проверяет событие и сразу подтверждает приём (`ACCEPTED`), а доставку выполняет асинхронно. Если Broker недоступен, Publisher получает исключение, пробует следующий Broker и возвращает понятный `PublishResult`.
+6. **Что происходит при отказе лидера?**
+   1. Лидер перестаёт отвечать.
+   2. Follower не получает ответ на heartbeat за таймаут (`HEARTBEAT TIMEOUT`) и помечает лидера FAILED.
+   3. Follower запускает новые выборы, лидером становится доступный узел с наибольшим ID (Node 5 → Node 4).
+   4. Пока лидера нет, предложения не принимаются. После выборов система продолжает работу.
 
-7. **Может ли один Subscriber получать несколько типов событий?** Да. Logger и SeatService подписаны на все три типа, NotificationService — на два.
+7. **Для чего используется Heartbeat?** Для обнаружения отказов: узлы периодически обмениваются короткими сообщениями
+   «жив?» / «жив». Отсутствие ответа — признак отказа, по которому запускаются перевыборы.
 
-8. **Что такое слабая связанность компонентов?** Компоненты зависят только от общего контракта (формата события и Broker), а не друг от друга. Их можно изменять, добавлять, удалять и запускать независимо.
+8. **Как определить, что узел недоступен?** По отсутствию ответа на heartbeat за заданный таймаут
+   (здесь `ClusterNetwork.Timeout`, 1 с). В реальной сети нельзя отличить упавший узел от медленного, поэтому вывод
+   «узел недоступен» — это предположение по таймауту. Таймаут выбирают больше обычной задержки ответа.
 
-9. **Почему Publisher не должен напрямую обращаться к Subscriber?** Иначе Publisher должен знать состав, адреса и интерфейсы всех получателей. Любой новый компонент потребовал бы изменения Publisher, а отказ или медленная работа Subscriber блокировали бы публикацию.
+9. **Что такое Majority?** Большинство (кворум): `⌊N / 2⌋ + 1` от **общего** числа узлов. Для 5 узлов — 3, для 4 — 3.
+   Любые два большинства пересекаются хотя бы в одном узле, поэтому невозможно принять два разных решения одновременно.
 
-10. **Для чего используется асинхронная обработка событий?** Чтобы операция и ответ клиенту не ждали обработки (ответ за миллисекунды вместо 3–6 с), чтобы Subscriber работали параллельно и чтобы отказ одного Subscriber не задерживал остальных.
+10. **Что такое голосование в распределённой системе?** Каждый узел сам отвечает лидеру YES или NO на предложенное
+    значение. Лидер считает голоса и принимает значение только при YES ≥ Majority.
 
-11. **Как проверить, что Subscriber не получает событие, на которое он не подписан?** Опубликовать событие и проверить, что у неподписанного Subscriber пусто (`Received` / счётчик «обработано»), а в журнале его нет в списке получателей. Тест `NotSubscribedSubscriber_DoesNotReceiveEvent`: после `SeatReserved` у NotificationService и AnalyticsService ничего нет.
+11. **Что произойдёт, если голоса разделились поровну?** Ничья — это не большинство, значит решение не принимается.
+    Например, при 4 узлах: 2 YES / 2 NO, а Majority = 3. Значение не фиксируется, лидер может повторить предложение позже.
+    Поэтому в кластерах используют нечётное число узлов (3, 5, 7): при нём ровная ничья невозможна, если отвечают все.
 
-12. **Что произойдёт при отсутствии подписчиков на событие?** Broker примет событие, запишет `NO SUBSCRIBERS for …` и завершит доставку с пустым результатом. Публикация успешна, ошибки нет. Событие никуда не попадает, поскольку оно не хранится для будущих подписчиков.
+12. **Почему наличие лидера само по себе не гарантирует консенсус?** Лидер только предлагает значение. Принимает его
+    большинство. В эксперименте 4 лидер Node 2 есть, но доступно 2 из 5 узлов, и решение не принимается. Кроме того,
+    лидер может отказать или устареть: в Raft лидер старого term не может закоммитить запись без кворума.
 
-13. **Что произойдёт, если Broker недоступен?** Publisher получит `BrokerUnavailableException` и переключится на Broker-2. Если недоступны все Broker, он вернёт `Success=false` с сообщением «Broker недоступен». Сервер не падает, операция клиента уже выполнена, но событие потеряно (нужен outbox).
+13. **Чем выбор лидера отличается от достижения консенсуса?** Выбор лидера определяет, **кто** координирует. Консенсус —
+    **что** принято (конкретное значение). Выборы — частный случай консенсуса (договориться о значении «ID лидера»).
+    Но наличие лидера не означает, что значение принято: для этого нужно отдельное голосование большинства.
 
-14. **Какие преимущества даёт Pub/Sub при добавлении новых компонентов?** Новый Subscriber подключается только регистрацией подписки, без изменения Publisher, сервера и других Subscriber. Пример — AnalyticsService, подключённый во время работы.
+14. **Что такое отказ узла?** Состояние, в котором узел перестаёт выполнять свою функцию: остановлен (crash),
+    недоступен по сети или не отвечает вовремя. Здесь моделируется состоянием FAILED: узел не отвечает на сообщения и
+    не голосует. Отказы бывают crash-stop, crash-recovery и византийские (узел отвечает неверно).
+    Paxos, Raft и Zab рассчитаны на отказы без византийского поведения.
 
-15. **Какие недостатки может иметь Pub/Sub?**
-    - Нет немедленного результата обработки (eventual consistency).
-    - Broker — дополнительный компонент и потенциальная точка отказа.
-    - Сложнее отладка и трассировка цепочки.
-    - Возможны дубли и нарушение порядка событий.
-    - Нужны идемпотентность, очереди и мониторинг.
+15. **Что такое Paxos?** Классический алгоритм консенсуса Лэмпорта. Роли: proposer, acceptor и learner.
+    1. Фаза 1 (Prepare / Promise): proposer получает от большинства acceptor обещание не принимать предложения
+       с меньшим номером.
+    2. Фаза 2 (Accept / Accepted): proposer предлагает значение, большинство его принимает.
 
-16. **Какие проблемы могут возникнуть при большом количестве событий?**
-    - Рост очередей и памяти Broker.
-    - Увеличение задержки доставки.
-    - Перегрузка медленных Subscriber, поэтому нужны back-pressure и ограничение параллелизма.
-    - Лавина повторов при массовых отказах.
-    - Потеря событий при переполнении или отказе Broker без персистентности.
-    - Сложность сохранения порядка.
-    - Нагрузка на журналы и мониторинг.
+    Paxos гарантирует безопасность при отказе меньшинства узлов. Его сложно понять и реализовать, на практике
+    используется Multi-Paxos с выделенным лидером.
+
+16. **Что такое Raft?** Алгоритм консенсуса, спроектированный ради понятности. Состоит из трёх частей:
+    - выбор лидера: роли Follower / Candidate / Leader, term, случайный election timeout, голосование большинством;
+    - репликация журнала: лидер рассылает AppendEntries, и запись закоммичена, когда её сохранило большинство;
+    - безопасность: лидером может стать только узел с актуальным журналом.
+
+    Heartbeat в Raft — пустой AppendEntries. Используется в etcd, Consul, CockroachDB. Эта ЛР ближе всего к Raft:
+    роли, term, heartbeat, перевыборы, кворум.
+
+17. **Что такое Zab?** ZooKeeper Atomic Broadcast — протокол Apache ZooKeeper. Лидер упорядочивает все изменения
+    и рассылает их followers: PROPOSAL → ACK от кворума → COMMIT. Каждое изменение получает номер zxid
+    (epoch + счётчик), поэтому все узлы применяют изменения в одном порядке. При отказе лидера выбирается узел с самой
+    свежей историей (максимальный zxid), затем выполняется синхронизация. Цепочка
+    PROPOSE → VOTE → COMMIT в этой ЛР повторяет эту схему.

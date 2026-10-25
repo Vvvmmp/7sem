@@ -1,3 +1,5 @@
+using System;
+using TicketSales.Server.Cluster;
 using TicketSales.Server.Dispatching.Handlers;
 using TicketSales.Server.Domain.Services;
 using TicketSales.Server.PubSub;
@@ -8,9 +10,10 @@ namespace TicketSales.Server.Dispatching;
 /// <summary>Единый набор операций сервера (используется сервером, тестами и демо).</summary>
 public static class ServerComposition
 {
-    public static OperationDispatcher CreateDispatcher(ReplicationManager replication, PubSubSystem? pubSub = null)
+    public static OperationDispatcher CreateDispatcher(ReplicationManager replication, PubSubSystem? pubSub = null, NodeCluster? cluster = null)
     {
         pubSub ??= PubSubSystem.Create(0);
+        cluster ??= NodeCluster.Create(heartbeatTimeout: TimeSpan.FromMilliseconds(50), writeToConsole: false);
         var service = new ReplicatedTicketSalesService(replication, pubSub.Publisher);
 
         IOperationHandler[] handlers =
@@ -26,7 +29,12 @@ public static class ServerComposition
             new SynchronizeInstancesHandler(replication),
             new GetPubSubStatusHandler(pubSub),
             new SetPubSubAvailabilityHandler(pubSub),
-            new SubscribeHandler(pubSub)
+            new SubscribeHandler(pubSub),
+            new GetClusterStatusHandler(cluster),
+            new SetNodeStateHandler(cluster),
+            new CheckHeartbeatHandler(cluster),
+            new StartElectionHandler(cluster),
+            new ProposeReservationStatusHandler(cluster, service)
         };
 
         return new OperationDispatcher(handlers);

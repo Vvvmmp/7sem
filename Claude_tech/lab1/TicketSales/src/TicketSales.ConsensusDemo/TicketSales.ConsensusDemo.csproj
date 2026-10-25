@@ -5,13 +5,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>TicketSales.PubSubDemo</RootNamespace>
+    <RootNamespace>TicketSales.ConsensusDemo</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\TicketSales.Shared\TicketSales.Shared.csproj" />
     <ProjectReference Include="..\TicketSales.Server\TicketSales.Server.csproj" />
-    <ProjectReference Include="..\TicketSales.Client\TicketSales.Client.csproj" />
   </ItemGroup>
 
 </Project>

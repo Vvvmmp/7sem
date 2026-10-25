@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using TicketSales.Client;
 using TicketSales.Shared.Dto;
+using TicketSales.Shared.Models;
 using TicketSales.Shared.Protocol;
 
 Console.OutputEncoding = Encoding.UTF8;
@@ -72,19 +73,19 @@ while (running)
                 await HandleSynchronizeTime(client, clockOffset);
                 break;
             case "7":
-                await HandlePubSubStatus(client);
+                await HandleClusterStatus(client);
                 break;
             case "8":
-                await HandleSetPubSubAvailability(client, "Subscriber (Logger / SeatService / NotificationService / AnalyticsService)", false);
+                await HandleSetNodeState(client);
                 break;
             case "9":
-                await HandleSetPubSubAvailability(client, "Broker (Broker-1 / Broker-2)", false);
+                PrintClusterStatus(await client.SendAsync("CheckHeartbeat", new GetClusterStatusRequestDto()));
                 break;
             case "10":
-                await HandleSubscribe(client);
+                PrintClusterStatus(await client.SendAsync("StartElection", new GetClusterStatusRequestDto()));
                 break;
             case "11":
-                await HandleSetPubSubAvailability(client, "Subscriber", true);
+                await HandleProposeReservationStatus(client);
                 break;
             case "0":
                 running = false;
@@ -113,11 +114,11 @@ static void PrintMenu()
     Console.WriteLine("4. Отменить билет");
     Console.WriteLine("5. Показать локальное время (с учетом смещения)");
     Console.WriteLine("6. Синхронизировать время с сервером");
-    Console.WriteLine("7. Состояние Pub/Sub (Broker, Subscriber, очередь, статистика)");
-    Console.WriteLine("8. Отказ / восстановление Subscriber");
-    Console.WriteLine("9. Отказ / восстановление Broker");
-    Console.WriteLine("10. Подписать Subscriber на событие");
-    Console.WriteLine("11. Временные ошибки Subscriber (повторная доставка)");
+    Console.WriteLine("7. Состояние кластера (узлы, лидер, Majority, журнал)");
+    Console.WriteLine("8. Отказ / восстановление узла, голос NO");
+    Console.WriteLine("9. Проверка heartbeat (обнаружение отказа)");
+    Console.WriteLine("10. Запустить выбор лидера");
+    Console.WriteLine("11. Предложить ReservationStatus билета (голосование узлов)");
     Console.WriteLine("0. Выход");
     Console.Write("Выберите пункт: ");
 }
@@ -261,69 +262,72 @@ static void PrintDataInstance(Response response)
     }
 }
 
-static async Task HandlePubSubStatus(NetworkClient client)
+static async Task HandleClusterStatus(NetworkClient client)
 {
-    PrintPubSubStatus(await client.SendAsync("GetPubSubStatus", new GetPubSubStatusRequestDto()));
+    PrintClusterStatus(await client.SendAsync("GetClusterStatus", new GetClusterStatusRequestDto()));
 }
 
-static async Task HandleSetPubSubAvailability(NetworkClient client, string prompt, bool transient)
+static async Task HandleSetNodeState(NetworkClient client)
 {
-    Console.Write($"{prompt}: ");
-    var request = new SetPubSubAvailabilityRequestDto { Component = (Console.ReadLine() ?? string.Empty).Trim(), Available = true };
+    Console.Write("Id узла (1–5): ");
+    var nodeId = int.Parse(Console.ReadLine() ?? string.Empty);
+    Console.Write("1 — FAILED, 2 — AVAILABLE, 3 — AVAILABLE и голосует NO: ");
+    var mode = (Console.ReadLine() ?? string.Empty).Trim();
 
-    if (transient)
+    PrintClusterStatus(await client.SendAsync("SetNodeState", new SetNodeStateRequestDto
     {
-        Console.Write("Сколько попыток доставки завершить ошибкой [2]: ");
-        request.TransientFailures = int.TryParse(Console.ReadLine(), out var failures) ? failures : 2;
-    }
-    else
-    {
-        Console.Write("1 — смоделировать отказ, 2 — восстановить: ");
-        request.Available = (Console.ReadLine() ?? string.Empty).Trim() == "2";
-    }
-
-    PrintPubSubStatus(await client.SendAsync("SetPubSubAvailability", request));
-}
-
-static async Task HandleSubscribe(NetworkClient client)
-{
-    Console.Write("Subscriber [AnalyticsService]: ");
-    var subscriber = Console.ReadLine();
-    Console.Write("Тип события (TicketPurchased / SeatReserved / TicketCancelled): ");
-    var eventType = (Console.ReadLine() ?? string.Empty).Trim();
-
-    PrintPubSubStatus(await client.SendAsync("Subscribe", new SubscribeRequestDto
-    {
-        Subscriber = string.IsNullOrWhiteSpace(subscriber) ? "AnalyticsService" : subscriber.Trim(),
-        EventType = eventType
+        NodeId = nodeId,
+        Available = mode != "1",
+        VotesNo = mode == "3"
     }));
 }
 
-static void PrintPubSubStatus(Response response)
+static async Task HandleProposeReservationStatus(NetworkClient client)
 {
+    Console.Write("Id билета: ");
+    var ticketId = int.Parse(Console.ReadLine() ?? string.Empty);
+    Console.Write("Новый ReservationStatus: 1 — Purchased, 2 — Cancelled: ");
+    var status = (Console.ReadLine() ?? string.Empty).Trim() == "2" ? TicketStatus.Cancelled : TicketStatus.Purchased;
+
+    var response = await client.SendAsync("ProposeReservationStatus", new ProposeReservationStatusRequestDto { TicketId = ticketId, Status = status });
+    PrintDataInstance(response);
     if (!response.Success || response.Data is null)
     {
-        Console.WriteLine($"Ошибка: {response.Error?.Message}");
+        Console.WriteLine($"Ошибка [{response.Error?.Code}]: {response.Error?.Message}");
         return;
     }
 
-    var status = response.Data.Value.Deserialize<PubSubStatusDto>(JsonDefaults.Options)!;
-    foreach (var broker in status.Brokers)
+    var result = response.Data.Value.Deserialize<ConsensusResultDto>(JsonDefaults.Options)!;
+    Console.WriteLine($"Leader Node {result.LeaderId} → PROPOSE {result.Proposal}");
+    foreach (var vote in result.Votes)
     {
-        Console.WriteLine($"{broker.Name}: {(broker.Available ? "AVAILABLE" : "UNAVAILABLE")} | в очереди: {broker.Pending}");
+        Console.WriteLine($"  Node {vote.Key} → {vote.Value}");
     }
 
-    foreach (var subscriber in status.Subscribers)
+    Console.WriteLine($"YES = {result.Yes}, NO = {result.No}, NO RESPONSE = {result.NoResponse}, Majority = {result.Majority}");
+    Console.WriteLine(result.Achieved ? "CONSENSUS ACHIEVED" : "CONSENSUS NOT ACHIEVED");
+    Console.WriteLine(result.Applied);
+}
+
+static void PrintClusterStatus(Response response)
+{
+    if (!response.Success || response.Data is null)
     {
-        var types = subscriber.EventTypes.Count == 0 ? "нет подписок" : string.Join(", ", subscriber.EventTypes);
-        Console.WriteLine($"{subscriber.Name}: {(subscriber.Available ? "AVAILABLE" : "UNAVAILABLE")} | {types} | обработано: {subscriber.Processed}");
+        Console.WriteLine($"Ошибка [{response.Error?.Code}]: {response.Error?.Message}");
+        return;
     }
 
-    Console.WriteLine($"Статистика AnalyticsService по типам: {string.Join(", ", status.EventsByType.Select(p => $"{p.Key}={p.Value}"))}");
-    Console.WriteLine($"Статистика AnalyticsService по клиентам: {string.Join(", ", status.EventsByClient.Select(p => $"{p.Key}={p.Value}"))}");
-    Console.WriteLine("Последние доставки:");
-    foreach (var delivery in status.LastDeliveries)
+    var status = response.Data.Value.Deserialize<ClusterStatusDto>(JsonDefaults.Options)!;
+    foreach (var node in status.Nodes)
     {
-        Console.WriteLine($"  {delivery}");
+        var role = node.Status == NodeStatus.Failed ? "—" : node.Role.ToString().ToUpperInvariant();
+        Console.WriteLine($"Node {node.Id} | {node.Status.ToString().ToUpperInvariant()} | {role} | голос: {(node.VotesNo ? "NO" : "по правилам")} | версия {node.LastAcceptedVersion} | принято: {node.LastCommitted ?? "—"}");
+    }
+
+    Console.WriteLine($"Leader: {(status.LeaderId is { } id ? $"Node {id}" : "нет")} | Term {status.Term} | доступно {status.Available}/{status.Nodes.Count} | Majority {status.Majority} | консенсус {(status.ConsensusPossible ? "возможен" : "невозможен")}");
+    Console.WriteLine("Журнал узлов:");
+    foreach (var line in status.LastLog)
+    {
+        Console.WriteLine($"  {line}");
     }
 }

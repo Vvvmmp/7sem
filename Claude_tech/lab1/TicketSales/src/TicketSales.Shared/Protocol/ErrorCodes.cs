@@ -8,4 +8,5 @@ public static class ErrorCodes
     public const string InternalError = "INTERNAL_ERROR";
     public const string DataUnavailable = "DATA_UNAVAILABLE";
     public const string SynchronizationError = "SYNCHRONIZATION_ERROR";
+    public const string ConsensusNotAchieved = "CONSENSUS_NOT_ACHIEVED";
 }

@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
+using TicketSales.Server.Cluster;
 using TicketSales.Server.Dispatching;
 using TicketSales.Server.Domain.Exceptions;
 using TicketSales.Server.Networking;
@@ -43,7 +44,11 @@ catch (DataUnavailableException ex)
     return;
 }
 
-var dispatcher = ServerComposition.CreateDispatcher(replication, PubSubSystem.Create());
+var cluster = NodeCluster.Create(heartbeatTimeout: TimeSpan.FromSeconds(1));
+cluster.LogNodeStates();
+await cluster.ElectAsync();
+
+var dispatcher = ServerComposition.CreateDispatcher(replication, PubSubSystem.Create(), cluster);
 var server = new TcpServer(IPAddress.Any, port, dispatcher);
 
 Console.WriteLine($"Сервер продажи билетов запущен на порту {server.Port}");
@@ -55,6 +60,8 @@ Console.CancelKeyPress += (_, e) =>
     e.Cancel = true;
     cts.Cancel();
 };
+
+cluster.StartMonitoring(TimeSpan.FromSeconds(3), cts.Token);
 
 await server.RunAsync(cts.Token);
 
