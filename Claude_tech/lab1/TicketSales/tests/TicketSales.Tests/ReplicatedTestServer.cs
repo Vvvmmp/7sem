@@ -28,12 +28,15 @@ public sealed class ReplicatedTestServer : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _serverTask;
 
-    private ReplicatedTestServer()
+    private ReplicatedTestServer(bool resetDatabases)
     {
         var primary = new DataInstance("Primary", PrimaryConnectionString);
         var replica = new DataInstance("Replica", ReplicaConnectionString);
-        PostgresSchemaInitializer.ResetAndSeed(primary.ConnectionFactory);
-        PostgresSchemaInitializer.ResetAndSeed(replica.ConnectionFactory);
+        if (resetDatabases)
+        {
+            PostgresSchemaInitializer.ResetAndSeed(primary.ConnectionFactory);
+            PostgresSchemaInitializer.ResetAndSeed(replica.ConnectionFactory);
+        }
 
         Replication = new ReplicationManager(primary, replica);
         Replication.Initialize();
@@ -48,7 +51,8 @@ public sealed class ReplicatedTestServer : IAsyncDisposable
     public NodeCluster Cluster { get; } = NodeCluster.Create(heartbeatTimeout: TimeSpan.FromMilliseconds(20), writeToConsole: false);
     public int Port { get; }
 
-    public static ReplicatedTestServer Start() => new();
+    /// <summary>resetDatabases = false — повторный запуск сервера поверх уже существующих данных.</summary>
+    public static ReplicatedTestServer Start(bool resetDatabases = true) => new(resetDatabases);
 
     public async Task<NetworkClient> ConnectAsync()
     {

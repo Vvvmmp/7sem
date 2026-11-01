@@ -10,13 +10,17 @@ using TicketSales.Shared.Protocol;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-Console.Write("Адрес сервера [127.0.0.1]: ");
-var hostInput = Console.ReadLine();
-var host = string.IsNullOrWhiteSpace(hostInput) ? "127.0.0.1" : hostInput.Trim();
+// В контейнере адрес сервера задаётся именем сервиса Docker (TICKETSALES_HOST=server), а не localhost.
+var defaultHost = Environment.GetEnvironmentVariable("TICKETSALES_HOST") ?? "127.0.0.1";
+var defaultPort = int.TryParse(Environment.GetEnvironmentVariable("TICKETSALES_PORT"), out var envPort) ? envPort : 5050;
 
-Console.Write("Порт сервера [5050]: ");
+Console.Write($"Адрес сервера [{defaultHost}]: ");
+var hostInput = Console.ReadLine();
+var host = string.IsNullOrWhiteSpace(hostInput) ? defaultHost : hostInput.Trim();
+
+Console.Write($"Порт сервера [{defaultPort}]: ");
 var portInput = Console.ReadLine();
-var port = 5050;
+var port = defaultPort;
 if (!string.IsNullOrWhiteSpace(portInput) && int.TryParse(portInput.Trim(), out var parsedPort))
 {
     port = parsedPort;
@@ -98,10 +102,24 @@ while (running)
     catch (NetworkException ex)
     {
         Console.WriteLine($"Ошибка сети: {ex.Message}");
+        await TryReconnect(client);
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Ошибка ввода данных: {ex.Message}");
+    }
+}
+
+static async Task TryReconnect(NetworkClient client)
+{
+    try
+    {
+        await client.ReconnectAsync();
+        Console.WriteLine("Соединение с сервером восстановлено, повторите операцию");
+    }
+    catch (ServerUnavailableException ex)
+    {
+        Console.WriteLine($"{ex.Message}. Повторите операцию позже — клиент переподключится автоматически");
     }
 }
 

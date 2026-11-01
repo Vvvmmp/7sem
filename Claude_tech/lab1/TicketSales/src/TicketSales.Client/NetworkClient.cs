@@ -13,9 +13,13 @@ public class NetworkClient : IDisposable
     private TcpClient? _client;
     private StreamReader? _reader;
     private StreamWriter? _writer;
+    private string? _host;
+    private int _port;
 
     public async Task ConnectAsync(string host, int port, int timeoutMs = 3000)
     {
+        _host = host;
+        _port = port;
         _client = new TcpClient();
 
         try
@@ -44,7 +48,7 @@ public class NetworkClient : IDisposable
     {
         if (_writer is null || _reader is null)
         {
-            throw new InvalidOperationException("Клиент не подключен к серверу");
+            throw new NetworkException("Нет соединения с сервером");
         }
 
         var request = new Request
@@ -69,10 +73,25 @@ public class NetworkClient : IDisposable
         }
     }
 
+    /// <summary>Повторное подключение к тому же серверу после обрыва (например, перезапуска контейнера).</summary>
+    public async Task ReconnectAsync(int timeoutMs = 3000)
+    {
+        if (_host is null)
+        {
+            throw new InvalidOperationException("Клиент ещё не подключался к серверу");
+        }
+
+        Dispose();
+        await ConnectAsync(_host, _port, timeoutMs);
+    }
+
     public void Dispose()
     {
         _reader?.Dispose();
         _writer?.Dispose();
         _client?.Dispose();
+        _reader = null;
+        _writer = null;
+        _client = null;
     }
 }

@@ -1,0 +1,94 @@
+name: ticketsales
+
+services:
+  postgres-primary:
+    image: postgres:17-alpine
+    container_name: ticketsales-primary
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ticketsales}
+      POSTGRES_USER: ${POSTGRES_USER:-ticketsales}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Скопируйте .env.example в .env и задайте POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"   # для локального запуска сервера и тестов с хоста
+    volumes:
+      - ticketsales-primary-data:/var/lib/postgresql/data
+    networks:
+      - ticketsales-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  postgres-replica:
+    image: postgres:17-alpine
+    container_name: ticketsales-replica
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-ticketsales}
+      POSTGRES_USER: ${POSTGRES_USER:-ticketsales}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Скопируйте .env.example в .env и задайте POSTGRES_PASSWORD}
+    ports:
+      - "5434:5432"
+    volumes:
+      - ticketsales-replica-data:/var/lib/postgresql/data
+    networks:
+      - ticketsales-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  server:
+    build:
+      context: .
+      dockerfile: src/TicketSales.Server/Dockerfile
+    image: ticketsales-server
+    container_name: ticketsales-server
+    environment:
+      APP_MODE: Docker
+      TICKETSALES_PORT: 5050
+      DB_PRIMARY_HOST: postgres-primary   # имя сервиса в сети Docker, не localhost
+      DB_PRIMARY_PORT: 5432               # внутренний порт контейнера БД
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: 5432
+      DB_NAME: ${POSTGRES_DB:-ticketsales}
+      DB_USER: ${POSTGRES_USER:-ticketsales}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?Скопируйте .env.example в .env и задайте POSTGRES_PASSWORD}
+      DB_CONNECT_ATTEMPTS: 15
+      DB_RETRY_DELAY_MS: 2000
+    ports:
+      - "5050:5050"
+    networks:
+      - ticketsales-net
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+    restart: on-failure
+
+  # Клиент в контейнере (интерактивный): docker compose run --rm client
+  client:
+    build:
+      context: .
+      dockerfile: src/TicketSales.Client/Dockerfile
+    image: ticketsales-client
+    environment:
+      TICKETSALES_HOST: server
+      TICKETSALES_PORT: 5050
+    networks:
+      - ticketsales-net
+    depends_on:
+      - server
+    stdin_open: true
+    tty: true
+    profiles: ["client"]
+
+networks:
+  ticketsales-net:
+    name: ticketsales-net
+
+volumes:
+  ticketsales-primary-data:
+  ticketsales-replica-data:
