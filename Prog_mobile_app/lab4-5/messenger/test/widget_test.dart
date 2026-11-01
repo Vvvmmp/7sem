@@ -20,6 +20,7 @@ void main() {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(const MessengerApp());
+    await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
   }
 

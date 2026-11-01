@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../data/hive_model.dart';
+import '../data/hive_bloc.dart';
 import '../data/models/post.dart';
 import '../data/models/user_profile.dart';
 import '../data/sample_data.dart';
@@ -89,9 +89,9 @@ class FeedScreen extends StatelessWidget {
                       Text('Following', style: AppTextStyles.tabInactive),
                       const Spacer(),
                       Flexible(
-                        child: Consumer<HiveModel>(
-                          builder: (_, model, _) => Text(
-                            '${model.user} ♥ ${model.favs.length}',
+                        child: BlocBuilder<HiveBloc, HiveState>(
+                          builder: (_, state) => Text(
+                            '${state.user} ♥ ${state.favs.length}',
                             style: AppTextStyles.subtextGray,
                             overflow: TextOverflow.ellipsis,
                           ),

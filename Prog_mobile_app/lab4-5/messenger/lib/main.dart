@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:provider/provider.dart';
 
-import 'data/hive_model.dart';
+import 'data/hive_bloc.dart';
 import 'data/hive_store.dart';
 import 'data/models/user_profile.dart';
 import 'screens/device_screen.dart';
@@ -21,8 +21,8 @@ class MessengerApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => HiveModel())],
+    return MultiBlocProvider(
+      providers: [BlocProvider(create: (_) => HiveBloc()..add(const LoadPosts()))],
       child: MaterialApp(
         title: 'Messenger',
         debugShowCheckedModeBanner: false,
