@@ -2,11 +2,6 @@ using System.Threading;
 
 namespace TicketSales.Server.Networking;
 
-/// <summary>
-/// Данные текущего запроса, доступные всем уровням сервера без передачи через параметры:
-/// ClientSession создаёт контекст, сервис записывает в него экземпляр данных,
-/// ClientSession возвращает этот экземпляр клиенту в ответе.
-/// </summary>
 public sealed class RequestContext
 {
     private static readonly AsyncLocal<RequestContext?> CurrentContext = new();

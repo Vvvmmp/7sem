@@ -32,7 +32,6 @@ public class DatabaseStartupTests
             DatabaseStartup.InitializeWithRetryAsync(replication, 2, TimeSpan.FromMilliseconds(10), CancellationToken.None));
     }
 
-    /// <summary>Сервис ещё не готов при старте (как PostgreSQL сразу после docker compose up) и становится доступен позже.</summary>
     [Fact]
     public async Task InitializeWithRetry_DatabaseBecomesReady_Succeeds()
     {

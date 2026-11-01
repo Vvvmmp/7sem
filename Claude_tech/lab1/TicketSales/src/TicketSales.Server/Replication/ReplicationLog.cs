@@ -3,7 +3,6 @@ using TicketSales.Server.Networking;
 
 namespace TicketSales.Server.Replication;
 
-/// <summary>Журнал операций/репликации: [время] [клиент] событие.</summary>
 public static class ReplicationLog
 {
     public static void Write(string message)

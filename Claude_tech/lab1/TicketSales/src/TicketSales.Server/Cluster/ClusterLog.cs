@@ -6,7 +6,6 @@ using TicketSales.Server.Replication;
 
 namespace TicketSales.Server.Cluster;
 
-/// <summary>Журнал работы узлов: вывод в консоль сервера и хранение записей в памяти (статус, тесты).</summary>
 public class ClusterLog
 {
     private readonly ConcurrentQueue<string> _entries = new();

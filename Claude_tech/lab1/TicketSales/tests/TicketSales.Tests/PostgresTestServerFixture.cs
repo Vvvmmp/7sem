@@ -3,7 +3,6 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-/// <summary>Общий сервер для класса тестов: полный стек Client → Server → Primary/Replica.</summary>
 public class PostgresTestServerFixture : IAsyncLifetime
 {
     private ReplicatedTestServer? _server;

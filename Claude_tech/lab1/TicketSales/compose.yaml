@@ -9,7 +9,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-ticketsales}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Скопируйте .env.example в .env и задайте POSTGRES_PASSWORD}
     ports:
-      - "5433:5432"   # для локального запуска сервера и тестов с хоста
+      - "5433:5432"
     volumes:
       - ticketsales-primary-data:/var/lib/postgresql/data
     networks:
@@ -48,8 +48,8 @@ services:
     environment:
       APP_MODE: Docker
       TICKETSALES_PORT: 5050
-      DB_PRIMARY_HOST: postgres-primary   # имя сервиса в сети Docker, не localhost
-      DB_PRIMARY_PORT: 5432               # внутренний порт контейнера БД
+      DB_PRIMARY_HOST: postgres-primary
+      DB_PRIMARY_PORT: 5432
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: 5432
       DB_NAME: ${POSTGRES_DB:-ticketsales}
@@ -68,7 +68,6 @@ services:
         condition: service_healthy
     restart: on-failure
 
-  # Клиент в контейнере (интерактивный): docker compose run --rm client
   client:
     build:
       context: .

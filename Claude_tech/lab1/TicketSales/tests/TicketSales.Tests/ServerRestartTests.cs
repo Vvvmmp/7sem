@@ -8,7 +8,6 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-/// <summary>Перезапуск процесса сервера поверх тех же БД: операции возобновляются, данные сохраняются.</summary>
 public class ServerRestartTests
 {
     [Fact]

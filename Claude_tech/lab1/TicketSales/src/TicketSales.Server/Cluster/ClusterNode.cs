@@ -7,11 +7,6 @@ using TicketSales.Shared.Models;
 
 namespace TicketSales.Server.Cluster;
 
-/// <summary>
-/// Узел распределённой системы: ID, состояние AVAILABLE / FAILED, роль LEADER / FOLLOWER,
-/// представление о других узлах. Входящие сообщения обрабатываются по одному (lock),
-/// поэтому одновременные сообщения не портят состояние узла.
-/// </summary>
 public class ClusterNode
 {
     private readonly object _lock = new();
@@ -43,7 +38,6 @@ public class ClusterNode
     public int Term { get; private set; }
     public int LastAcceptedVersion { get; private set; }
 
-    /// <summary>Модель несогласия узла: на любое предложение отвечает NO.</summary>
     public bool VotesNo { get; set; }
 
     public int ReceivedMessages => Volatile.Read(ref _receivedMessages);
@@ -71,7 +65,6 @@ public class ClusterNode
         }
     }
 
-    /// <summary>Восстановленный узел возвращается FOLLOWER и не знает лидера до следующих выборов.</summary>
     public void Recover()
     {
         lock (_lock)
@@ -85,7 +78,6 @@ public class ClusterNode
     public Task<ClusterMessage> SendAsync(MessageType type, int to, int? term = null, Proposal? proposal = null, int? leaderId = null, int version = 0) =>
         _network.SendAsync(new ClusterMessage(type, Id, to, term ?? Term, proposal, leaderId, version));
 
-    /// <summary>HEARTBEAT → ALIVE; при отсутствии ответа узел считает peer FAILED.</summary>
     public async Task<bool> SendHeartbeatAsync(int to, bool verbose)
     {
         if (verbose)
@@ -128,7 +120,6 @@ public class ClusterNode
         }
     }
 
-    /// <summary>Применение результата выборов (и у самого инициатора, и у получателя COORDINATOR).</summary>
     public bool ApplyCoordinator(int term, int leaderId, int version)
     {
         lock (_lock)
@@ -146,10 +137,6 @@ public class ClusterNode
         }
     }
 
-    /// <summary>
-    /// Голос узла: YES, если узел согласен, версия новее уже принятой и статус — допустимый
-    /// целевой ReservationStatus (Purchased / Cancelled). Иначе NO с причиной.
-    /// </summary>
     public (bool Agree, string? Reason) Vote(Proposal proposal)
     {
         lock (_lock)
@@ -191,7 +178,6 @@ public class ClusterNode
         }
     }
 
-    /// <summary>Обработка входящего сообщения. Ошибочные сообщения не бросают исключений, а получают ответ Error.</summary>
     public ClusterMessage Receive(ClusterMessage message)
     {
         Interlocked.Increment(ref _receivedMessages);

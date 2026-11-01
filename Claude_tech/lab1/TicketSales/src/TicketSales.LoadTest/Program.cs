@@ -8,8 +8,6 @@ using TicketSales.Client;
 using TicketSales.Shared.Dto;
 using TicketSales.Shared.Protocol;
 
-// Нагрузочный тест: N параллельных клиентов по TCP, каждый выполняет M запросов к серверу в контейнере.
-// dotnet run --project src/TicketSales.LoadTest -- [host] [port] [clients] [requestsPerClient]
 Console.OutputEncoding = Encoding.UTF8;
 
 var host = args.Length > 0 ? args[0] : "127.0.0.1";
@@ -39,7 +37,6 @@ await Task.WhenAll(Enumerable.Range(1, clients).Select(async clientId =>
     var random = new Random(clientId);
     for (var i = 0; i < requestsPerClient; i++)
     {
-        // Смешанная нагрузка: чтение событий и мест, время сервера, каждые 10 запросов — бронирование.
         var (operation, payload) = (i % 10) switch
         {
             9 => ("ReserveSeat", (object)new ReserveSeatRequestDto

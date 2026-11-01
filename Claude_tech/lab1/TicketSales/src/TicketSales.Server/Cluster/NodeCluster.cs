@@ -9,10 +9,6 @@ using TicketSales.Shared.Models;
 
 namespace TicketSales.Server.Cluster;
 
-/// <summary>
-/// Кластер узлов: выбор лидера (доступный узел с максимальным ID), обнаружение отказа через heartbeat,
-/// повторные выборы, предложение значения лидером и принятие решения большинством (Majority = N / 2 + 1).
-/// </summary>
 public class NodeCluster
 {
     public const int DefaultSize = 5;
@@ -50,7 +46,6 @@ public class NodeCluster
 
     public bool ConsensusPossible => AvailableNodes.Count >= Majority;
 
-    /// <summary>Лидер среди доступных узлов. Отказавший лидер сюда не попадает, пока его не обнаружит heartbeat.</summary>
     public ClusterNode? Leader => AvailableNodes.FirstOrDefault(n => n.Role == NodeRole.Leader);
 
     public ClusterNode GetNode(int id) =>
@@ -143,10 +138,6 @@ public class NodeCluster
         }
     }
 
-    /// <summary>
-    /// Failure detector: follower с наименьшим ID шлёт HEARTBEAT лидеру; нет ответа → лидер FAILED → новые выборы.
-    /// Затем лидер проверяет followers. verbose = false — в журнал попадают только изменения состояния.
-    /// </summary>
     public async Task<bool> DetectFailuresAsync(bool verbose = true)
     {
         await _detectGate.WaitAsync();
@@ -220,7 +211,6 @@ public class NodeCluster
         }, cancellationToken);
     }
 
-    /// <summary>Моделирование отказа / восстановления узла и его несогласия при голосовании.</summary>
     public async Task SetNodeStateAsync(int nodeId, bool available, bool votesNo)
     {
         var node = GetNode(nodeId);
@@ -244,10 +234,6 @@ public class NodeCluster
         }
     }
 
-    /// <summary>
-    /// Лидер предлагает ReservationStatus билета, рассылает PROPOSE остальным узлам, собирает голоса
-    /// и объявляет CONSENSUS ACHIEVED только при YES ≥ Majority. Без большинства значение не применяется.
-    /// </summary>
     public async Task<ConsensusResultDto> ProposeAsync(int ticketId, TicketStatus status)
     {
         if (ticketId <= 0)

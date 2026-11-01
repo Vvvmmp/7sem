@@ -33,7 +33,6 @@ Console.CancelKeyPress += (_, e) =>
     cts.Cancel();
 };
 
-// docker stop отправляет SIGTERM: сервер завершается штатно и успевает записать журнал.
 using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, context =>
 {
     context.Cancel = true;

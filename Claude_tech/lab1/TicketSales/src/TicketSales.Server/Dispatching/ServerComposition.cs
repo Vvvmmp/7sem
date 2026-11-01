@@ -7,7 +7,6 @@ using TicketSales.Server.Replication;
 
 namespace TicketSales.Server.Dispatching;
 
-/// <summary>Единый набор операций сервера (используется сервером, тестами и демо).</summary>
 public static class ServerComposition
 {
     public static OperationDispatcher CreateDispatcher(ReplicationManager replication, PubSubSystem? pubSub = null, NodeCluster? cluster = null)

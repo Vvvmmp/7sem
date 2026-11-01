@@ -8,12 +8,6 @@ using TicketSales.Shared.Dto;
 
 namespace TicketSales.Server.Domain.Services;
 
-/// <summary>
-/// Сервис предметной области поверх пары Primary / Replica.
-/// Чтение: выбор доступного экземпляра (с Failover) и выполнение на нём.
-/// Изменение: выполнение на выбранном экземпляре, затем репликация изменения на второй.
-/// Сама бизнес-логика (lock + транзакции) остаётся в TicketSalesServicePostgres каждого экземпляра.
-/// </summary>
 public class ReplicatedTicketSalesService : ITicketSalesService
 {
     private readonly ReplicationManager _replication;
@@ -46,7 +40,6 @@ public class ReplicatedTicketSalesService : ITicketSalesService
             WriteAsync($"UPDATE CancelTicket ticket={request.TicketId}", instance => instance.Service.CancelTicket(request), _ => request.TicketId),
             _ => new PubSubEvent(EventTypes.TicketCancelled, request.TicketId));
 
-    // Время сервера не хранится в БД, экземпляр данных для него не нужен.
     public Task<GetServerTimeResponseDto> GetServerTime() => _replication.Primary.Service.GetServerTime();
 
     private async Task<T> PublishAsync<T>(Task<T> operation, Func<T, PubSubEvent> createEvent)
@@ -105,8 +98,6 @@ public class ReplicatedTicketSalesService : ITicketSalesService
         }
         catch (Exception ex)
         {
-            // Экземпляр отказал уже после проверки (например, контейнер остановлен во время запроса).
-            // Следующий запрос обнаружит отказ при проверке и выполнит Failover.
             ReplicationLog.Write($"{instance.Name} → ERROR ({ex.Message})");
             throw new DataUnavailableException($"Ошибка доступа к данным на экземпляре {instance.Name}: {ex.Message}");
         }

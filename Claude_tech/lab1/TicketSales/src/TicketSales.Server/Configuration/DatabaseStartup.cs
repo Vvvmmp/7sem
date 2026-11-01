@@ -8,10 +8,6 @@ using TicketSales.Server.Replication;
 
 namespace TicketSales.Server.Configuration;
 
-/// <summary>
-/// depends_on не гарантирует, что PostgreSQL уже принимает подключения, поэтому сервер
-/// повторяет инициализацию экземпляров данных, пока БД не станет доступна или не закончатся попытки.
-/// </summary>
 public static class DatabaseStartup
 {
     public static async Task InitializeWithRetryAsync(

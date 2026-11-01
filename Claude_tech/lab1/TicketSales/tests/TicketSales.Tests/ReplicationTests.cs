@@ -8,10 +8,6 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-/// <summary>
-/// ЛР №5: репликация, Failover, Recovery. Каждый тест поднимает собственный сервер
-/// со сброшенными Primary и Replica, поэтому тесты не зависят друг от друга.
-/// </summary>
 public class ReplicationTests
 {
     [Fact]
@@ -91,8 +87,6 @@ public class ReplicationTests
         using var client1 = await server.ConnectAsync();
         using var client2 = await server.ConnectAsync();
 
-        // Билет, созданный на Primary до отказа, сдвигает счётчик id на обеих копиях:
-        // следующий INSERT уже на Replica не должен конфликтовать по первичному ключу.
         Assert.True((await Reserve(client1, seatId: 1)).Success);
         await SetAvailability(client1, "Primary", available: false);
 

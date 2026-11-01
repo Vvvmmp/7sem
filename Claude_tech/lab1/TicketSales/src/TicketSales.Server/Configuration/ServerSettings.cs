@@ -4,10 +4,6 @@ using Npgsql;
 
 namespace TicketSales.Server.Configuration;
 
-/// <summary>
-/// Параметры запуска сервера. Порядок: значения по умолчанию (локальный запуск) → переменные окружения
-/// (Docker / compose.yaml) → аргументы командной строки (как в предыдущих ЛР).
-/// </summary>
 public class ServerSettings
 {
     public string Mode { get; private init; } = "Local";
@@ -47,7 +43,6 @@ public class ServerSettings
         };
     }
 
-    /// <summary>Описание для журнала запуска: пароль не выводится.</summary>
     public string Describe() =>
         $"Mode={Mode}, Port={Port}, Primary=[{Mask(PrimaryConnectionString)}], Replica=[{Mask(ReplicaConnectionString)}], " +
         $"DbConnectAttempts={DbConnectAttempts}, DbRetryDelay={DbRetryDelay.TotalMilliseconds:F0}ms";

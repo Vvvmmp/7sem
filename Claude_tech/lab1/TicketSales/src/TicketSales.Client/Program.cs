@@ -10,7 +10,6 @@ using TicketSales.Shared.Protocol;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-// В контейнере адрес сервера задаётся именем сервиса Docker (TICKETSALES_HOST=server), а не localhost.
 var defaultHost = Environment.GetEnvironmentVariable("TICKETSALES_HOST") ?? "127.0.0.1";
 var defaultPort = int.TryParse(Environment.GetEnvironmentVariable("TICKETSALES_PORT"), out var envPort) ? envPort : 5050;
 

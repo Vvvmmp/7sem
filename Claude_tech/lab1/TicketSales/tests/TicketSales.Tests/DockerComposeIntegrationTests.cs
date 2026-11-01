@@ -14,11 +14,6 @@ using Xunit;
 
 namespace TicketSales.Tests;
 
-/// <summary>
-/// Интеграционные тесты контейнеризированного приложения. Требуют запущенного docker compose up -d --build:
-/// сервер ticketsales-server на localhost:5050, БД ticketsales-primary / ticketsales-replica.
-/// Запуск только этих тестов: dotnet test --filter Category=Docker
-/// </summary>
 [Trait("Category", "Docker")]
 public class DockerComposeIntegrationTests : IAsyncLifetime
 {
@@ -27,8 +22,6 @@ public class DockerComposeIntegrationTests : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        // Те же БД, что использует контейнер сервера (опубликованы на 5433/5434): чистое начальное состояние.
-        // Пул очищается: после перезапуска контейнеров БД старые соединения закрыты сервером (57P01).
         NpgsqlConnection.ClearAllPools();
         PostgresSchemaInitializer.ResetAndSeed(new DataInstance("Primary", ReplicatedTestServer.PrimaryConnectionString).ConnectionFactory);
         PostgresSchemaInitializer.ResetAndSeed(new DataInstance("Replica", ReplicatedTestServer.ReplicaConnectionString).ConnectionFactory);
@@ -120,7 +113,6 @@ public class DockerComposeIntegrationTests : IAsyncLifetime
         Assert.Equal(ErrorCodes.ValidationError, buyAgain.Error?.Code);
     }
 
-    /// <summary>Нагрузка на контейнер: 20 клиентов × 25 запросов, затем гонка 10 клиентов за одно место.</summary>
     [Fact]
     public async Task ConcurrentClients_AllRequestsSucceed_AndOnlyOneReservationWins()
     {
@@ -182,7 +174,6 @@ public class DockerComposeIntegrationTests : IAsyncLifetime
         return response.Data!.Value.Deserialize<GetSeatSnapshotResponseDto>(JsonDefaults.Options)!.Status;
     }
 
-    /// <summary>После (пере)запуска контейнера сервис временно недоступен: ждём, пока запрос не выполнится успешно.</summary>
     private static async Task WaitUntilServerHandlesRequestsAsync()
     {
         var deadline = DateTime.UtcNow.AddSeconds(60);

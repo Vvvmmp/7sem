@@ -4,20 +4,10 @@ using Npgsql;
 
 namespace TicketSales.Server.Replication;
 
-/// <summary>
-/// Передача данных между экземплярами на уровне строк таблиц:
-/// построчная репликация после изменения, полное копирование при синхронизации
-/// и сравнение содержимого двух копий.
-/// </summary>
 public static class DataCopier
 {
-    /// <summary>Таблицы в порядке внешних ключей: сначала родительские.</summary>
     public static readonly string[] Tables = { "events", "seats", "customers", "tickets", "payments" };
 
-    /// <summary>
-    /// Репликация одного изменения: все строки, связанные с билетом
-    /// (покупатель, место, билет, платежи), копируются из source в target одной транзакцией.
-    /// </summary>
     public static List<string> CopyTicketRows(NpgsqlConnection source, NpgsqlConnection target, int ticketId)
     {
         var filters = new (string Table, string Where)[]
@@ -46,7 +36,6 @@ public static class DataCopier
         return copied;
     }
 
-    /// <summary>Синхронизация: target полностью заменяется содержимым source (одна транзакция).</summary>
     public static void CopyAll(NpgsqlConnection source, NpgsqlConnection target)
     {
         using var transaction = target.BeginTransaction();
@@ -70,7 +59,6 @@ public static class DataCopier
         transaction.Commit();
     }
 
-    /// <summary>Сравнение копий: хэш содержимого каждой таблицы + построчное сравнение статусов мест.</summary>
     public static List<string> FindDifferences(NpgsqlConnection primary, NpgsqlConnection replica)
     {
         var differences = new List<string>();
@@ -145,10 +133,6 @@ public static class DataCopier
         command.ExecuteNonQuery();
     }
 
-    /// <summary>
-    /// Строки копируются с явными id, поэтому счётчики SERIAL на target нужно сдвинуть,
-    /// иначе следующий INSERT на этом экземпляре (например, после Failover) получит занятый id.
-    /// </summary>
     private static void ResetSequences(NpgsqlConnection connection, NpgsqlTransaction transaction)
     {
         foreach (var table in Tables)

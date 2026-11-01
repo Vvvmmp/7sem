@@ -80,10 +80,6 @@ public class StartElectionHandler : IOperationHandler
     }
 }
 
-/// <summary>
-/// Операция клиента, приводящая к предложению изменения: новый ReservationStatus билета
-/// применяется к данным (BuyTicket / CancelTicket) только после CONSENSUS ACHIEVED.
-/// </summary>
 public class ProposeReservationStatusHandler : IOperationHandler
 {
     private readonly NodeCluster _cluster;

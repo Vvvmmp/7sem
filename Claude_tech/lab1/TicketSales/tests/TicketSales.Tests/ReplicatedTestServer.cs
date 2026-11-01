@@ -12,11 +12,6 @@ using TicketSales.Server.Storage.Postgres;
 
 namespace TicketSales.Tests;
 
-/// <summary>
-/// Сервер на loopback поверх двух реальных PostgreSQL (docker compose: Primary 5433, Replica 5434).
-/// Обе БД сбрасываются; Replica засевается отдельно (другие timestamps), поэтому начальное
-/// равенство Primary = Replica обеспечивает именно ReplicationManager.Initialize.
-/// </summary>
 public sealed class ReplicatedTestServer : IAsyncDisposable
 {
     public const string PrimaryConnectionString =
@@ -51,7 +46,6 @@ public sealed class ReplicatedTestServer : IAsyncDisposable
     public NodeCluster Cluster { get; } = NodeCluster.Create(heartbeatTimeout: TimeSpan.FromMilliseconds(20), writeToConsole: false);
     public int Port { get; }
 
-    /// <summary>resetDatabases = false — повторный запуск сервера поверх уже существующих данных.</summary>
     public static ReplicatedTestServer Start(bool resetDatabases = true) => new(resetDatabases);
 
     public async Task<NetworkClient> ConnectAsync()

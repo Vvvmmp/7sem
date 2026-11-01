@@ -73,7 +73,6 @@ public class NetworkClient : IDisposable
         }
     }
 
-    /// <summary>Повторное подключение к тому же серверу после обрыва (например, перезапуска контейнера).</summary>
     public async Task ReconnectAsync(int timeoutMs = 3000)
     {
         if (_host is null)

@@ -6,10 +6,6 @@ using TicketSales.Shared.Models;
 
 namespace TicketSales.Server.Replication;
 
-/// <summary>
-/// Один экземпляр хранения данных (Primary или Replica): своя БД PostgreSQL,
-/// свои репозитории и свой сервис предметной области поверх них.
-/// </summary>
 public class DataInstance
 {
     private readonly string _connectionString;
@@ -34,17 +30,12 @@ public class DataInstance
     public PostgresConnectionFactory ConnectionFactory { get; }
     public ITicketSalesService Service { get; }
 
-    /// <summary>
-    /// Программная модель отказа ("имитация ошибки подключения"): экземпляр считается
-    /// недоступным, сервер к нему не обращается, хотя сама БД продолжает работать.
-    /// </summary>
     public bool SimulatedFailure
     {
         get => _simulatedFailure;
         set => _simulatedFailure = value;
     }
 
-    /// <summary>Проверка доступности: реальное подключение к БД и запрос SELECT 1.</summary>
     public InstanceState CheckState()
     {
         if (_simulatedFailure)
@@ -52,8 +43,6 @@ public class DataInstance
             return InstanceState.Unavailable;
         }
 
-        // После остановки/перезапуска контейнера в пуле могут остаться "мёртвые" соединения:
-        // при ошибке пул очищается и проверка повторяется один раз уже на новом соединении.
         for (var attempt = 0; attempt < 2; attempt++)
         {
             try

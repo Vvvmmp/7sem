@@ -9,10 +9,6 @@ using TicketSales.Shared.Models;
 
 namespace TicketSales.Server.Replication;
 
-/// <summary>
-/// Управляет парой Primary / Replica: состояние экземпляров, выбор экземпляра для запроса (Failover),
-/// репликация изменений, синхронизация после восстановления (Recovery).
-/// </summary>
 public class ReplicationManager
 {
     private readonly object _stateLock = new();
@@ -28,11 +24,6 @@ public class ReplicationManager
     public DataInstance Primary { get; }
     public DataInstance Replica { get; }
 
-    /// <summary>
-    /// Изменение + его репликация выполняются под одним шлюзом, чтобы изменения передавались
-    /// в Replica в том же порядке, в каком применялись к Primary, и не пересекались с синхронизацией.
-    /// Чтения шлюз не берут и выполняются параллельно.
-    /// </summary>
     public SemaphoreSlim WriteGate { get; } = new(1, 1);
 
     public bool PrimaryNeedsSync
@@ -45,7 +36,6 @@ public class ReplicationManager
         get { lock (_stateLock) return _replicaNeedsSync; }
     }
 
-    /// <summary>Запуск сервера: схема на обоих экземплярах и начальное состояние Primary = Replica.</summary>
     public void Initialize()
     {
         ReplicationLog.Write("Startup → проверка экземпляров");
@@ -92,13 +82,9 @@ public class ReplicationManager
         CopyAll(Primary, Replica);
         ReplicationLog.Write(FindDifferences().Count == 0
             ? "Начальное состояние → Primary = Replica"
-            : "Начальное состояние → НАРУШЕНИЕ СОГЛАСОВАННОСТИ");
+            : "Начальное состояние → не согласованно");
     }
 
-    /// <summary>
-    /// Выбор экземпляра для запроса. Primary используется, пока он доступен и актуален;
-    /// иначе выполняется Failover на Replica. Если подходящего экземпляра нет — понятная ошибка клиенту.
-    /// </summary>
     public DataInstance ResolveForRequest()
     {
         ReplicationLog.Write("Primary → CHECK");
@@ -144,11 +130,6 @@ public class ReplicationManager
         throw new DataUnavailableException("Оба экземпляра данных (Primary и Replica) недоступны. Повторите запрос позже");
     }
 
-    /// <summary>
-    /// Передача изменения на второй экземпляр после успешного изменения на source.
-    /// Ошибка репликации не отменяет уже выполненную операцию: второй экземпляр помечается
-    /// как требующий синхронизации, и до неё не используется.
-    /// </summary>
     public void ReplicateTicket(DataInstance source, int ticketId)
     {
         var target = Other(source);
@@ -183,10 +164,6 @@ public class ReplicationManager
         }
     }
 
-    /// <summary>
-    /// Recovery: после восстановления экземпляра копия с актуальным состоянием полностью переносится
-    /// на устаревшую, затем копии сравниваются повторно.
-    /// </summary>
     public async Task<SynchronizeInstancesResponseDto> SynchronizeAsync()
     {
         await WriteGate.WaitAsync();
@@ -217,7 +194,6 @@ public class ReplicationManager
                 return new SynchronizeInstancesResponseDto { ConsistentAfter = true };
             }
 
-            // Актуальна та копия, которая продолжала принимать изменения; без отказа источником считается Primary.
             var (source, target) = PrimaryNeedsSync ? (Replica, Primary) : (Primary, Replica);
             ReplicationLog.Write($"Synchronization → копирование {source.Name} → {target.Name}");
 
@@ -234,7 +210,7 @@ public class ReplicationManager
             var consistentAfter = FindDifferences().Count == 0;
             if (!consistentAfter)
             {
-                ReplicationLog.Write("Synchronization → FAIL, НАРУШЕНИЕ СОГЛАСОВАННОСТИ после копирования");
+                ReplicationLog.Write("Synchronization → FAIL, Не согласованно после копирования");
                 throw new SynchronizationException("Нарушение согласованности: после синхронизации копии всё ещё отличаются");
             }
 

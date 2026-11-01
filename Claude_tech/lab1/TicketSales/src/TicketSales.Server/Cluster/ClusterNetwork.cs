@@ -5,10 +5,6 @@ using TicketSales.Shared.Models;
 
 namespace TicketSales.Server.Cluster;
 
-/// <summary>
-/// Канал обмена сообщениями между узлами внутри процесса сервера.
-/// Узел FAILED не отвечает: отправитель ждёт Timeout и получает NO RESPONSE.
-/// </summary>
 public class ClusterNetwork
 {
     private readonly ConcurrentDictionary<int, ClusterNode> _nodes = new();
@@ -41,7 +37,6 @@ public class ClusterNetwork
             throw new NodeUnreachableException(message.To, "NO RESPONSE");
         }
 
-        // Асинхронная доставка: получатель обрабатывает сообщение не в потоке отправителя.
         await Task.Yield();
         return target.Receive(message);
     }

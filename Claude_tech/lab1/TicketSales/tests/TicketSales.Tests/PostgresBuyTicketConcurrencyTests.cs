@@ -48,8 +48,6 @@ public class PostgresBuyTicketConcurrencyTests : IClassFixture<PostgresTestServe
 
         try
         {
-            // All connections are already established; firing the sends together (rather than
-            // interleaving connect+send per client) maximizes real overlap on the server side.
             var responses = await Task.WhenAll(clients.Select(c =>
                 c.SendAsync("BuyTicket", new BuyTicketRequestDto { TicketId = ticketId })));
 

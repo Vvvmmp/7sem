@@ -16,16 +16,11 @@ public enum MessageType
     Error
 }
 
-/// <summary>Предлагаемое значение предметной области: новый ReservationStatus билета.</summary>
 public record Proposal(int Version, int TicketId, TicketStatus Status)
 {
     public override string ToString() => $"Version={Version}, Ticket {TicketId}: ReservationStatus={Status}";
 }
 
-/// <summary>
-/// Сообщение между узлами. Term — номер выборов (эпоха лидера), Version — последняя принятая версия значения.
-/// Ответ на Propose — Vote с Agree = YES / NO и причиной в Reason.
-/// </summary>
 public record ClusterMessage(
     MessageType Type,
     int From,

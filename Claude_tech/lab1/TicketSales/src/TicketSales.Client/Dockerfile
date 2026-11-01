@@ -1,4 +1,3 @@
-# Сборка из корня решения: docker build -f src/TicketSales.Client/Dockerfile -t ticketsales-client .
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
@@ -14,7 +13,6 @@ FROM mcr.microsoft.com/dotnet/runtime:10.0 AS runtime
 WORKDIR /app
 COPY --from=build /app .
 
-# Внутри сети Docker сервер доступен по имени сервиса, а не по localhost.
 ENV TICKETSALES_HOST=server \
     TICKETSALES_PORT=5050
 ENTRYPOINT ["dotnet", "TicketSales.Client.dll"]
