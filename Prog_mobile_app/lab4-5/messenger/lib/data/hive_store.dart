@@ -14,9 +14,8 @@ class HiveStore {
 
   static late Box<AppUser> users;
   static late Box<PostItem> posts;
-  static late Box favorites; // имя пользователя -> List<int> ключей постов
+  static late Box favorites; 
 
-  /// Ключ шифрования лежит в защищённом хранилище ОС (Keychain / Keystore).
   static Future<List<int>> secureKey() async {
     const storage = FlutterSecureStorage();
     final saved = await storage.read(key: 'hive_key');
@@ -50,7 +49,13 @@ class HiveStore {
     return favorites.put(user, list);
   }
 
-  /// Читает копию бокса со случайным («неправильным») ключом.
+  static Future<void> deletePost(int postKey) async {
+    await posts.delete(postKey);
+    for (final user in favorites.keys) {
+      await setFav(user, postKey, false);
+    }
+  }
+
   static Future<String> wrongKeyDemo() async {
     final dir = File(posts.path!).parent.path;
     await File(posts.path!).copy('$dir/posts_demo.hive');
@@ -68,7 +73,6 @@ class HiveStore {
     }
   }
 
-  /// Сжимает файл бокса, удаляя записи о стёртых и перезаписанных значениях.
   static Future<String> compact() async {
     final file = File(posts.path!);
     final before = file.lengthSync();

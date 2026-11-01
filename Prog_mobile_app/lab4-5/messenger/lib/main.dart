@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
 
+import 'data/hive_model.dart';
 import 'data/hive_store.dart';
 import 'data/models/user_profile.dart';
 import 'screens/device_screen.dart';
@@ -19,23 +21,26 @@ class MessengerApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Messenger',
-      debugShowCheckedModeBanner: false,
-      theme: AppTheme.theme,
-      home: const FeedScreen(),
-      onGenerateRoute: (settings) {
-        switch (settings.name) {
-          case '/profile':
-            return MaterialPageRoute(
-              settings: settings,
-              builder: (_) => ProfileScreen(profile: settings.arguments as UserProfile),
-            );
-          case '/device':
-            return MaterialPageRoute(settings: settings, builder: (_) => const DeviceScreen());
-        }
-        return null;
-      },
+    return MultiProvider(
+      providers: [ChangeNotifierProvider(create: (_) => HiveModel())],
+      child: MaterialApp(
+        title: 'Messenger',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.theme,
+        home: const FeedScreen(),
+        onGenerateRoute: (settings) {
+          switch (settings.name) {
+            case '/profile':
+              return MaterialPageRoute(
+                settings: settings,
+                builder: (_) => ProfileScreen(profile: settings.arguments as UserProfile),
+              );
+            case '/device':
+              return MaterialPageRoute(settings: settings, builder: (_) => const DeviceScreen());
+          }
+          return null;
+        },
+      ),
     );
   }
 }

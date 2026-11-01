@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../data/hive_model.dart';
 import '../data/hive_store.dart';
 import '../data/models/post.dart';
 
@@ -19,10 +21,10 @@ class _PostFormScreenState extends State<PostFormScreen> {
   late final _username = TextEditingController(text: _old?.username);
   late final _meta = TextEditingController(text: _old?.meta);
   late final _caption = TextEditingController(text: _old?.captionPrefix);
-  late String _image = _old?.imageAssets.first ?? _photos.first;
+  late final List<String> _images = [...?_old?.imageAssets];
 
   Future<void> _save() async {
-    if (_username.text.isEmpty || _caption.text.isEmpty) return;
+    if (_username.text.isEmpty || _caption.text.isEmpty || _images.isEmpty) return;
     final post = PostItem(
       avatarAsset: _old?.avatarAsset ?? 'assets/images/avatar_me.jpg',
       username: _username.text,
@@ -30,9 +32,9 @@ class _PostFormScreenState extends State<PostFormScreen> {
       captionPrefix: _caption.text,
       captionMention: _old?.captionMention ?? '',
       captionSuffix: _old?.captionSuffix ?? '',
-      imageAssets: [_image],
+      imageAssets: _images,
     );
-    widget.postKey == null ? await HiveStore.posts.add(post) : await HiveStore.posts.put(widget.postKey, post);
+    await context.read<HiveModel>().savePost(widget.postKey, post);
     if (mounted) Navigator.pop(context);
   }
 
@@ -46,11 +48,16 @@ class _PostFormScreenState extends State<PostFormScreen> {
           TextField(controller: _username, decoration: const InputDecoration(labelText: 'Username')),
           TextField(controller: _meta, decoration: const InputDecoration(labelText: 'Location')),
           TextField(controller: _caption, decoration: const InputDecoration(labelText: 'Description')),
-          DropdownButton<String>(
-            value: _image,
-            isExpanded: true,
-            items: [for (final p in _photos) DropdownMenuItem(value: p, child: Text(p))],
-            onChanged: (value) => setState(() => _image = value!),
+          Wrap(
+            spacing: 8,
+            children: [
+              for (final p in {..._photos, ..._images})
+                FilterChip(
+                  label: Text(p.split('/').last),
+                  selected: _images.contains(p),
+                  onSelected: (on) => setState(() => on ? _images.add(p) : _images.remove(p)),
+                ),
+            ],
           ),
           ElevatedButton(onPressed: _save, child: const Text('Save')),
         ],

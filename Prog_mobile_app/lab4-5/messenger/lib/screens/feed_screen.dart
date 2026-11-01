@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
+import '../data/hive_model.dart';
 import '../data/models/post.dart';
 import '../data/models/user_profile.dart';
 import '../data/sample_data.dart';
@@ -85,6 +87,16 @@ class FeedScreen extends StatelessWidget {
                       Text('Discover', style: AppTextStyles.tabActive),
                       const SizedBox(width: 20),
                       Text('Following', style: AppTextStyles.tabInactive),
+                      const Spacer(),
+                      Flexible(
+                        child: Consumer<HiveModel>(
+                          builder: (_, model, _) => Text(
+                            '${model.user} ♥ ${model.favs.length}',
+                            style: AppTextStyles.subtextGray,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ),
                     ],
                   ),
                 ),

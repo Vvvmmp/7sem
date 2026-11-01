@@ -1,6 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:hive/hive.dart';
 
+import 'package:messenger/data/hive_store.dart';
 import 'package:messenger/main.dart';
 import 'package:messenger/screens/feed_screen.dart';
 import 'package:messenger/screens/post_detail_screen.dart';
@@ -8,6 +12,8 @@ import 'package:messenger/screens/story_viewer_screen.dart';
 import 'package:messenger/widgets/story_avatar_row.dart';
 
 void main() {
+  setUpAll(() => HiveStore.init(Directory.systemTemp.createTempSync().path, Hive.generateSecureKey()));
+
   Future<void> pumpAtPhoneSize(WidgetTester tester) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1.0;
