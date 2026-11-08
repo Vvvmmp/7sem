@@ -43,7 +43,7 @@ services:
     build:
       context: .
       dockerfile: src/TicketSales.Server/Dockerfile
-    image: ticketsales-server
+    image: ticketsales-server:1.0
     container_name: ticketsales-server
     environment:
       APP_MODE: Docker
@@ -67,22 +67,6 @@ services:
       postgres-replica:
         condition: service_healthy
     restart: on-failure
-
-  client:
-    build:
-      context: .
-      dockerfile: src/TicketSales.Client/Dockerfile
-    image: ticketsales-client
-    environment:
-      TICKETSALES_HOST: server
-      TICKETSALES_PORT: 5050
-    networks:
-      - ticketsales-net
-    depends_on:
-      - server
-    stdin_open: true
-    tty: true
-    profiles: ["client"]
 
 networks:
   ticketsales-net:

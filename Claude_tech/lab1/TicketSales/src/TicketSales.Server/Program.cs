@@ -25,6 +25,7 @@ catch (ConfigurationException ex)
 }
 
 ReplicationLog.Write($"Конфигурация → {settings.Describe()}");
+Console.WriteLine($"Application mode: {settings.Mode}, instance: {Environment.MachineName}");
 
 using var cts = new CancellationTokenSource();
 Console.CancelKeyPress += (_, e) =>
@@ -51,7 +52,7 @@ try
 catch (DataUnavailableException ex)
 {
     Console.WriteLine($"Не удалось подключиться к базе данных: {ex.Message}");
-    Console.WriteLine("Убедитесь, что запущены контейнеры БД (docker compose up -d) и параметры DB_* указаны верно.");
+    Console.WriteLine(settings.DatabaseHint);
     return 1;
 }
 catch (OperationCanceledException)

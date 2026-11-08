@@ -118,7 +118,7 @@ static async Task TryReconnect(NetworkClient client)
     }
     catch (ServerUnavailableException ex)
     {
-        Console.WriteLine($"{ex.Message}. Повторите операцию позже — клиент переподключится автоматически");
+        Console.WriteLine($"{ex.Message}. Повторите операцию позже– клиент переподключится автоматически");
     }
 }
 
@@ -288,7 +288,7 @@ static async Task HandleSetNodeState(NetworkClient client)
 {
     Console.Write("Id узла (1–5): ");
     var nodeId = int.Parse(Console.ReadLine() ?? string.Empty);
-    Console.Write("1 — FAILED, 2 — AVAILABLE, 3 — AVAILABLE и голосует NO: ");
+    Console.Write("1– FAILED, 2– AVAILABLE, 3– AVAILABLE и голосует NO: ");
     var mode = (Console.ReadLine() ?? string.Empty).Trim();
 
     PrintClusterStatus(await client.SendAsync("SetNodeState", new SetNodeStateRequestDto
@@ -303,7 +303,7 @@ static async Task HandleProposeReservationStatus(NetworkClient client)
 {
     Console.Write("Id билета: ");
     var ticketId = int.Parse(Console.ReadLine() ?? string.Empty);
-    Console.Write("Новый ReservationStatus: 1 — Purchased, 2 — Cancelled: ");
+    Console.Write("Новый ReservationStatus: 1– Purchased, 2– Cancelled: ");
     var status = (Console.ReadLine() ?? string.Empty).Trim() == "2" ? TicketStatus.Cancelled : TicketStatus.Purchased;
 
     var response = await client.SendAsync("ProposeReservationStatus", new ProposeReservationStatusRequestDto { TicketId = ticketId, Status = status });

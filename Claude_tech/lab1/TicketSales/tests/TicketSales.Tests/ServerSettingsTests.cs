@@ -62,6 +62,33 @@ public class ServerSettingsTests
     }
 
     [Fact]
+    public void Load_KubernetesMode_FromConfigMapVariable_UsesKubernetesDatabaseHint()
+    {
+        var environment = DockerEnvironment();
+        environment["APP_MODE"] = "Kubernetes";
+
+        var settings = ServerSettings.Load([], environment);
+
+        Assert.Equal("Kubernetes", settings.Mode);
+        Assert.Contains("kubectl get pods", settings.DatabaseHint);
+        Assert.Contains("Mode=Kubernetes", settings.Describe());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Load_EmptyAppMode_FallsBackToLocal(string value)
+    {
+        var environment = DockerEnvironment();
+        environment["APP_MODE"] = value;
+
+        var settings = ServerSettings.Load([], environment);
+
+        Assert.Equal("Local", settings.Mode);
+        Assert.Contains("docker compose", settings.DatabaseHint);
+    }
+
+    [Fact]
     public void Describe_DoesNotExposePassword()
     {
         var description = ServerSettings.Load([], DockerEnvironment()).Describe();

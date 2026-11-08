@@ -69,7 +69,7 @@ public static class DataCopier
             var (replicaCount, replicaHash) = TableFingerprint(replica, table);
             if (primaryHash != replicaHash)
             {
-                differences.Add($"{table}: Primary {primaryCount} строк, Replica {replicaCount} строк — содержимое отличается");
+                differences.Add($"{table}: Primary {primaryCount} строк, Replica {replicaCount} строк– содержимое отличается");
             }
         }
 

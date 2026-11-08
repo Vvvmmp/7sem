@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ticketsales-server
+  labels:
+    app: ticketsales-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ticketsales-server
+  template:
+    metadata:
+      labels:
+        app: ticketsales-server
+    spec:
+      containers:
+        - name: server
+          image: ticketsales-server:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5050
+          env:
+            - name: APP_MODE
+              valueFrom:
+                configMapKeyRef:
+                  name: ticketsales-config
+                  key: APP_MODE
+            - name: TICKETSALES_PORT
+              value: "5050"
+            - name: DB_PRIMARY_HOST
+              value: postgres-primary
+            - name: DB_PRIMARY_PORT
+              value: "5432"
+            - name: DB_REPLICA_HOST
+              value: postgres-replica
+            - name: DB_REPLICA_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: ticketsales
+            - name: DB_USER
+              value: ticketsales
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: ticketsales-db
+                  key: POSTGRES_PASSWORD
+            - name: DB_CONNECT_ATTEMPTS
+              value: "30"
+            - name: DB_RETRY_DELAY_MS
+              value: "2000"
+          readinessProbe:
+            tcpSocket:
+              port: 5050
+            initialDelaySeconds: 2
+            periodSeconds: 3

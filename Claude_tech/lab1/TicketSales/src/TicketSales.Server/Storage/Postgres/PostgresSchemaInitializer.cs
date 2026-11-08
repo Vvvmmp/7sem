@@ -54,9 +54,12 @@ public static class PostgresSchemaInitializer
         DROP TABLE IF EXISTS events;
         """;
 
+    private const long SchemaLockKey = 20260909;
+
     public static void EnsureCreatedAndSeeded(PostgresConnectionFactory factory)
     {
         using var connection = factory.Open();
+        using var transaction = AcquireSchemaLock(connection);
         using (var create = connection.CreateCommand())
         {
             create.CommandText = CreateTablesSql;
@@ -70,14 +73,30 @@ public static class PostgresSchemaInitializer
         {
             SeedInto(connection);
         }
+
+        transaction.Commit();
     }
 
     public static void EnsureCreated(PostgresConnectionFactory factory)
     {
         using var connection = factory.Open();
-        using var create = connection.CreateCommand();
-        create.CommandText = CreateTablesSql;
-        create.ExecuteNonQuery();
+        using var transaction = AcquireSchemaLock(connection);
+        using (var create = connection.CreateCommand())
+        {
+            create.CommandText = CreateTablesSql;
+            create.ExecuteNonQuery();
+        }
+
+        transaction.Commit();
+    }
+
+    private static NpgsqlTransaction AcquireSchemaLock(NpgsqlConnection connection)
+    {
+        var transaction = connection.BeginTransaction();
+        using var lockCommand = connection.CreateCommand();
+        lockCommand.CommandText = $"SELECT pg_advisory_xact_lock({SchemaLockKey})";
+        lockCommand.ExecuteNonQuery();
+        return transaction;
     }
 
     public static void ResetAndSeed(PostgresConnectionFactory factory)

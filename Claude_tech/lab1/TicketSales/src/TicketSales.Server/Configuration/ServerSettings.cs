@@ -16,7 +16,7 @@ public class ServerSettings
 
     public static ServerSettings Load(string[] args, IDictionary environment)
     {
-        string? Env(string name) => environment[name] as string is { Length: > 0 } value ? value.Trim() : null;
+        string? Env(string name) => (environment[name] as string)?.Trim() is { Length: > 0 } value ? value : null;
 
         var dbName = Env("DB_NAME") ?? "ticketsales";
         var dbUser = Env("DB_USER") ?? "ticketsales";
@@ -42,6 +42,11 @@ public class ServerSettings
             DbRetryDelay = TimeSpan.FromMilliseconds(ParseInt("DB_RETRY_DELAY_MS", Env("DB_RETRY_DELAY_MS") ?? "2000", 0, 600_000))
         };
     }
+
+    public string DatabaseHint =>
+        string.Equals(Mode, "Kubernetes", StringComparison.OrdinalIgnoreCase)
+            ? "Проверьте Pod и Service БД: kubectl get pods,services -l tier=database"
+            : "Убедитесь, что запущены контейнеры БД (docker compose up -d) и параметры DB_* указаны верно.";
 
     public string Describe() =>
         $"Mode={Mode}, Port={Port}, Primary=[{Mask(PrimaryConnectionString)}], Replica=[{Mask(ReplicaConnectionString)}], " +
