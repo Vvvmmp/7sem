@@ -1,0 +1,117 @@
+pipeline {
+    agent any
+
+    triggers {
+        pollSCM('H/2 * * * *')
+    }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    environment {
+        PATH = "/opt/homebrew/bin:/usr/local/bin:${HOME}/.docker/bin:${PATH}"
+        DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+        POSTGRES_PASSWORD = 'ticketsales'
+
+        APP_DIR = 'Claude_tech/lab1/TicketSales'
+        SOLUTION = 'TicketSales.sln'
+        IMAGE = 'ticketsales-server'
+        DEPLOYMENT = 'ticketsales-server'
+        CONTAINER = 'server'
+        KUBE_CONTEXT = 'docker-desktop'
+        SMOKE_PORT = '15050'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                sh 'git log -1 --oneline'
+            }
+        }
+
+        stage('Restore') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'dotnet restore $SOLUTION'
+                }
+            }
+        }
+
+        stage('Build') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'dotnet build $SOLUTION --configuration Release --no-restore'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'docker compose up -d --wait postgres-primary postgres-replica'
+                    sh 'dotnet test $SOLUTION --configuration Release --no-build --logger "trx" --results-directory TestResults'
+                }
+            }
+            post {
+                always {
+                    dir(env.APP_DIR) {
+                        archiveArtifacts artifacts: 'TestResults/**/*.trx', allowEmptyArchive: true
+                        sh 'docker compose down'
+                    }
+                }
+            }
+        }
+
+        stage('Package') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'docker build -f src/TicketSales.Server/Dockerfile -t $IMAGE:$BUILD_NUMBER .'
+                    sh 'docker image inspect $IMAGE:$BUILD_NUMBER --format "{{.RepoTags}} {{.Id}} {{.Size}} bytes"'
+                }
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh 'kubectl --context $KUBE_CONTEXT set image deployment/$DEPLOYMENT $CONTAINER=$IMAGE:$BUILD_NUMBER'
+                    sh 'kubectl --context $KUBE_CONTEXT rollout status deployment/$DEPLOYMENT --timeout=180s'
+                    sh 'kubectl --context $KUBE_CONTEXT get deployments'
+                    sh 'kubectl --context $KUBE_CONTEXT get pods -l app=$DEPLOYMENT'
+                }
+            }
+        }
+
+        stage('Verify') {
+            steps {
+                dir(env.APP_DIR) {
+                    sh '''
+                        set -e
+                        ACTUAL=$(kubectl --context $KUBE_CONTEXT get deployment/$DEPLOYMENT -o jsonpath="{.spec.template.spec.containers[0].image}")
+                        echo "Deployment image: $ACTUAL"
+                        [ "$ACTUAL" = "$IMAGE:$BUILD_NUMBER" ]
+
+                        kubectl --context $KUBE_CONTEXT port-forward service/$DEPLOYMENT $SMOKE_PORT:5050 >/dev/null 2>&1 &
+                        PF=$!
+                        trap 'kill $PF 2>/dev/null || true' EXIT
+                        for i in 1 2 3 4 5 6 7 8 9 10; do nc -z 127.0.0.1 $SMOKE_PORT && break; sleep 1; done
+
+                        REPLY=$(printf '{"RequestId":"ci","Operation":"GetEvents","Payload":{}}\\n' | nc -w 5 127.0.0.1 $SMOKE_PORT)
+                        echo "$REPLY"
+                        echo "$REPLY" | grep -q '"Success":true'
+
+                        kubectl --context $KUBE_CONTEXT logs deployment/$DEPLOYMENT --tail=10
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success { echo "Pipeline OK: $IMAGE:$BUILD_NUMBER deployed to $DEPLOYMENT" }
+        failure { echo 'Pipeline FAILED: see the failed stage in Console Output' }
+    }
+}
