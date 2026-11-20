@@ -1,0 +1,54 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<MetaDataObject xmlns="http://v8.1c.ru/8.3/MDClasses" xmlns:app="http://v8.1c.ru/8.2/managed-application/core" xmlns:cfg="http://v8.1c.ru/8.1/data/enterprise/current-config" xmlns:cmi="http://v8.1c.ru/8.2/managed-application/cmi" xmlns:ent="http://v8.1c.ru/8.1/data/enterprise" xmlns:lf="http://v8.1c.ru/8.2/managed-application/logform" xmlns:style="http://v8.1c.ru/8.1/data/ui/style" xmlns:sys="http://v8.1c.ru/8.1/data/ui/fonts/system" xmlns:v8="http://v8.1c.ru/8.1/data/core" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:web="http://v8.1c.ru/8.1/data/ui/colors/web" xmlns:win="http://v8.1c.ru/8.1/data/ui/colors/windows" xmlns:xen="http://v8.1c.ru/8.3/xcf/enums" xmlns:xpr="http://v8.1c.ru/8.3/xcf/predef" xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="2.21">
+	<Enum uuid="6a2ac44d-5cc2-4cb6-8ea2-696e51a0bbae">
+		<InternalInfo>
+			<xr:GeneratedType name="EnumRef.ВидыЦен" category="Ref">
+				<xr:TypeId>b33bbee7-614b-4a07-9aca-e1b304050643</xr:TypeId>
+				<xr:ValueId>f7162d8e-5962-4546-bf84-f4d31fddf321</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumManager.ВидыЦен" category="Manager">
+				<xr:TypeId>ec1c06ac-b941-4981-91e0-a20be32a4163</xr:TypeId>
+				<xr:ValueId>34ce1e1e-b6bc-4827-baf0-780a97474ba7</xr:ValueId>
+			</xr:GeneratedType>
+			<xr:GeneratedType name="EnumList.ВидыЦен" category="List">
+				<xr:TypeId>6e2c6630-1344-48e5-8db5-7be9e196548d</xr:TypeId>
+				<xr:ValueId>045c2f75-a0dc-4861-9518-e95a70262479</xr:ValueId>
+			</xr:GeneratedType>
+		</InternalInfo>
+		<Properties>
+			<Name>ВидыЦен</Name>
+			<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Виды цен</v8:content></v8:item></Synonym>
+			<Comment/>
+			<UseStandardCommands>false</UseStandardCommands>
+			<Characteristics/>
+			<QuickChoice>true</QuickChoice>
+			<ChoiceMode>BothWays</ChoiceMode>
+			<DefaultListForm/>
+			<DefaultChoiceForm/>
+			<AuxiliaryListForm/>
+			<AuxiliaryChoiceForm/>
+			<ListPresentation/>
+			<ExtendedListPresentation/>
+			<Explanation/>
+			<ChoiceHistoryOnInput>Auto</ChoiceHistoryOnInput>
+		</Properties>
+		<ChildObjects>
+			<EnumValue uuid="63f12f41-138f-4fd4-95fb-b7b594d857d7">
+				<Properties>
+					<Name>Закупочная</Name>
+					<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Закупочная</v8:content></v8:item></Synonym>
+					<Comment/>
+					<Color>auto</Color>
+				</Properties>
+			</EnumValue>
+			<EnumValue uuid="e5941b8a-7346-4733-a3fd-8ea92bfc5063">
+				<Properties>
+					<Name>Отпускная</Name>
+					<Synonym><v8:item><v8:lang>ru</v8:lang><v8:content>Отпускная</v8:content></v8:item></Synonym>
+					<Comment/>
+					<Color>auto</Color>
+				</Properties>
+			</EnumValue>
+		</ChildObjects>
+	</Enum>
+</MetaDataObject>
