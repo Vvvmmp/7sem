@@ -35,12 +35,16 @@ dependencies:
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
   image_picker: ^1.2.3
-  sqflite: ^2.4.4+1
   path_provider: ^2.1.6
-  hive: ^2.2.3
-  flutter_secure_storage: ^11.2.0
   flutter_bloc: ^9.1.1
   equatable: ^3.0.0
+  firebase_core: ^5.1.0
+  firebase_auth: ^7.0.1
+  cloud_firestore: ^7.1.0
+  firebase_database: ^13.0.1
+  firebase_messaging: ^17.0.1
+  firebase_remote_config: ^7.0.1
+  firebase_analytics: ^13.0.1
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -52,6 +56,10 @@ dev_dependencies:
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
   flutter_launcher_icons: ^0.14.4
+  mockito: ^5.8.1
+  integration_test:
+    sdk: flutter
+  build_runner: ^2.16.2
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

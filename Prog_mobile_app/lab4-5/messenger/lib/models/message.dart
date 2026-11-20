@@ -1,5 +1,5 @@
 class Message implements Comparable<Message> {
-  final int? id;
+  final String? id;
   String _content;
   final String author;
   final bool isSystem;
@@ -37,7 +37,7 @@ class Message implements Comparable<Message> {
 
   factory Message.fromJson(Map<String, dynamic> json) {
     final createdAt = DateTime.parse(json['createdAt'] as String);
-    final id = json['id'] as int?;
+    final id = json['id'] as String?;
     if (json['isSystem'] == true) {
       return Message.system(json['content'] as String, id: id, createdAt: createdAt);
     }

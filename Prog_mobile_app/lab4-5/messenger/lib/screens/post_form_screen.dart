@@ -1,23 +1,22 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../data/hive_bloc.dart';
-import '../data/hive_store.dart';
 import '../data/models/post.dart';
+import '../data/posts_bloc.dart';
 
 final _photos = [for (var i = 1; i <= 5; i++) 'assets/images/photo_$i.jpg'];
 
 class PostFormScreen extends StatefulWidget {
-  const PostFormScreen({super.key, this.postKey});
+  const PostFormScreen({super.key, this.post});
 
-  final int? postKey;
+  final PostItem? post;
 
   @override
   State<PostFormScreen> createState() => _PostFormScreenState();
 }
 
 class _PostFormScreenState extends State<PostFormScreen> {
-  late final PostItem? _old = HiveStore.posts.get(widget.postKey);
+  late final PostItem? _old = widget.post;
   late final _username = TextEditingController(text: _old?.username);
   late final _meta = TextEditingController(text: _old?.meta);
   late final _caption = TextEditingController(text: _old?.captionPrefix);
@@ -25,6 +24,7 @@ class _PostFormScreenState extends State<PostFormScreen> {
 
   void _save() {
     final post = PostItem(
+      id: _old?.id ?? '',
       avatarAsset: _old?.avatarAsset ?? 'assets/images/avatar_me.jpg',
       username: _username.text,
       meta: _meta.text,
@@ -33,18 +33,18 @@ class _PostFormScreenState extends State<PostFormScreen> {
       captionSuffix: _old?.captionSuffix ?? '',
       imageAssets: _images,
     );
-    context.read<HiveBloc>().add(SavePost(widget.postKey, post));
+    context.read<PostsBloc>().add(SavePost(post));
   }
 
   @override
   Widget build(BuildContext context) {
-    return BlocListener<HiveBloc, HiveState>(
-      listenWhen: (prev, curr) => prev.status == Status.loading,
+    return BlocListener<PostsBloc, PostsState>(
+      listenWhen: (prev, curr) => prev.status == Status.loading && curr.status != Status.loading,
       listener: (context, state) => state.status == Status.error
           ? ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(state.error)))
           : Navigator.pop(context),
       child: Scaffold(
-        appBar: AppBar(title: Text(widget.postKey == null ? 'New post' : 'Edit post')),
+        appBar: AppBar(title: Text(widget.post == null ? 'New post' : 'Edit post')),
         body: ListView(
           padding: const EdgeInsets.all(16),
           children: [

@@ -24,13 +24,13 @@ class _MessageFormScreenState extends State<MessageFormScreen> {
     super.dispose();
   }
 
-  Future<void> _save() async {
+  void _save() {
     if (_content.text.isEmpty || (!_isSystem && _author.text.isEmpty)) return;
     final old = widget.message;
     final message = _isSystem
         ? Message.system(_content.text, id: old?.id, createdAt: old?.createdAt)
         : Message(_author.text, _content.text, id: old?.id, createdAt: old?.createdAt);
-    old == null ? await MessageDb.insert(message) : await MessageDb.update(message);
+    old == null ? MessageDb.insert(message) : MessageDb.update(message);
     if (mounted) Navigator.pop(context);
   }
 

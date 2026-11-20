@@ -24,9 +24,9 @@ class MessageDetailScreen extends StatelessWidget {
           ),
           IconButton(
             icon: const Icon(Icons.delete),
-            onPressed: () async {
-              await MessageDb.delete(message.id!);
-              if (context.mounted) Navigator.pop(context);
+            onPressed: () {
+              MessageDb.delete(message.id!);
+              Navigator.pop(context);
             },
           ),
         ],

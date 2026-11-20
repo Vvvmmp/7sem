@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+
+import '../data/config_bloc.dart';
 
 import '../data/models/post.dart';
 import '../theme/app_colors.dart';
@@ -75,7 +78,9 @@ class _PostDetailScreenState extends State<PostDetailScreen> {
               alignment: Alignment.centerLeft,
               child: TextButton.icon(
                 key: const Key('postDetailLikeButton'),
-                onPressed: () => setState(() => _liked = !_liked),
+                onPressed: context.select((ConfigBloc b) => b.state.likeEnabled)
+                    ? () => setState(() => _liked = !_liked)
+                    : null,
                 icon: Icon(_liked ? Icons.favorite : Icons.favorite_border, color: AppColors.accentTeal),
                 label: Text(_liked ? 'Liked' : 'Like', style: AppTextStyles.sectionHeader),
               ),

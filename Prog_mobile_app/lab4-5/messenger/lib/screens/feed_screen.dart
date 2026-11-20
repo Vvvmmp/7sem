@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
-import '../data/hive_bloc.dart';
+import '../data/config_bloc.dart';
+import '../data/posts_bloc.dart';
 import '../data/models/post.dart';
 import '../data/models/user_profile.dart';
 import '../data/sample_data.dart';
@@ -11,9 +12,10 @@ import '../theme/app_text_styles.dart';
 import '../widgets/feed_bottom_bar.dart';
 import '../widgets/post_card.dart';
 import '../widgets/story_avatar_row.dart';
-import 'hive_screen.dart';
+import 'account_screen.dart';
 import 'messages_screen.dart';
 import 'post_detail_screen.dart';
+import 'posts_screen.dart';
 
 class FeedScreen extends StatelessWidget {
   const FeedScreen({super.key});
@@ -54,8 +56,13 @@ class FeedScreen extends StatelessWidget {
                       ),
                       const SizedBox(width: 10),
                       GestureDetector(
-                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HiveScreen())),
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const PostsScreen())),
                         child: const _IconCircleButton(icon: Icons.storage_outlined),
+                      ),
+                      const SizedBox(width: 10),
+                      GestureDetector(
+                        onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const AccountScreen())),
+                        child: const _IconCircleButton(icon: Icons.person_outline),
                       ),
                       const Spacer(),
                       GestureDetector(
@@ -89,9 +96,9 @@ class FeedScreen extends StatelessWidget {
                       Text('Following', style: AppTextStyles.tabInactive),
                       const Spacer(),
                       Flexible(
-                        child: BlocBuilder<HiveBloc, HiveState>(
+                        child: BlocBuilder<PostsBloc, PostsState>(
                           builder: (_, state) => Text(
-                            '${state.user} ♥ ${state.favs.length}',
+                            '${state.name} ♥ ${state.favs.length}',
                             style: AppTextStyles.subtextGray,
                             overflow: TextOverflow.ellipsis,
                           ),
@@ -119,10 +126,10 @@ class FeedScreen extends StatelessWidget {
                     width: double.infinity,
                     margin: const EdgeInsets.symmetric(horizontal: 16),
                     clipBehavior: Clip.antiAlias,
-                    decoration: const BoxDecoration(
-                      color: AppColors.surface,
-                      borderRadius: BorderRadius.all(Radius.circular(28)),
-                      boxShadow: [
+                    decoration: BoxDecoration(
+                      color: context.select((ConfigBloc b) => b.state.blockColor),
+                      borderRadius: const BorderRadius.all(Radius.circular(28)),
+                      boxShadow: const [
                         BoxShadow(color: AppColors.shadowColor, blurRadius: 16, offset: Offset(0, 4)),
                       ],
                     ),
