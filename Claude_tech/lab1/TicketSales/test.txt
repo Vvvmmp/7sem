@@ -1,0 +1,38 @@
+kubectl config use-context docker-desktop
+kubectl get nodes         
+
+cd ~/University/7sem/Claude_tech/lab1/TicketSales
+docker images ticketsales-server          
+kubectl create secret generic ticketsales-db --from-literal=POSTGRES_PASSWORD=ticketsales
+kubectl apply -f k8s/postgres.yaml
+kubectl apply -f k8s/configmap.yaml -f k8s/deployment.yaml -f k8s/service.yaml
+kubectl get pods -w                        
+
+kubectl port-forward service/ticketsales-server 5050:5050   
+dotnet run --project src/TicketSales.Client
+
+
+
+#current
+kubectl config use-context docker-desktop
+kubectl create secret generic ticketsales-db --from-literal=POSTGRES_PASSWORD=ticketsales
+kubectl apply -f k8s/
+kubectl get pods        # все Running
+
+
+
+
+
+cat ~/.jenkins/secrets/initialAdminPassword
+
+brew services start jenkins-lts
+
+
+brew services list                      # статус (started / stopped)
+brew services stop jenkins-lts          # остановить (порт 8080 освободится)
+brew services start jenkins-lts         # запустить
+brew services restart jenkins-lts       # перезапустить (после смены PATH, прав, настроек)
+brew services info jenkins-lts          # детали, PID, путь к plist
+
+lsof -i :8080                           # что занимает порт
+curl -sI http://127.0.0.1:8080/login    # отвечает ли Jenkins (200 = жив)
