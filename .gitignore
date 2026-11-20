@@ -1,2 +1,11 @@
 .DS_Store
 **/.DS_Store
+
+# Office lock files
+~$*
+
+# 1C lock files
+*.cfl
+
+# Firebase config (public repo)
+google-services.json
