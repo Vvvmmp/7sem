@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package calc;
+
+option csharp_namespace = "Calc";
+option go_package = "grpcclient02/calc;calc";
+
+service Calculator {
+  rpc Sum  (BinaryRequest) returns (DoubleReply);
+  rpc Sub  (BinaryRequest) returns (DoubleReply);
+  rpc Mul  (BinaryRequest) returns (DoubleReply);
+  rpc Div  (BinaryRequest) returns (DoubleReply); // y = 0 -> INVALID_ARGUMENT
+  rpc Fact (FactRequest)   returns (IntReply);    // x < 0 -> INVALID_ARGUMENT, x! > int32 -> OUT_OF_RANGE
+}
+
+message BinaryRequest {
+  double x = 1;
+  double y = 2;
+}
+
+message DoubleReply {
+  double result = 1;
+}
+
+message FactRequest {
+  int32 x = 1;
+}
+
+message IntReply {
+  int32 result = 1;
+}

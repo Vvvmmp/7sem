@@ -1,0 +1,28 @@
+@gateway = http://127.0.0.1:5004
+
+### GET — RESULT = 0
+GET {{gateway}}/stack
+
+### POST — RESULT = 10
+POST {{gateway}}/stack
+Content-Type: application/json
+
+{ "RESULT": 10 }
+
+### PUT — push 5
+PUT {{gateway}}/stack?ADD=5
+
+### PUT — push 7
+PUT {{gateway}}/stack?ADD=7
+
+### GET — RESULT = 17 (X-Instance чередуется, значение сохраняется)
+GET {{gateway}}/stack
+
+### DELETE — pop 7
+DELETE {{gateway}}/stack
+
+### DELETE — pop 5
+DELETE {{gateway}}/stack
+
+### DELETE — стек пуст -> 409
+DELETE {{gateway}}/stack

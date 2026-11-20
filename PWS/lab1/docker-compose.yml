@@ -1,0 +1,49 @@
+services:
+  ws01-01:
+    build: ./WS01-01
+    image: ws01-01
+    hostname: ws01-01
+    ports:
+      - "5001:8080"
+
+  ws01-01-a:
+    image: ws01-01
+    hostname: ws01-01-a
+    depends_on: [ws01-01]
+  ws01-01-b:
+    image: ws01-01
+    hostname: ws01-01-b
+    depends_on: [ws01-01]
+  gateway-sticky:
+    build: ./Gateway
+    image: ws01-gateway
+    hostname: gateway-sticky
+    environment:
+      ASPNETCORE_ENVIRONMENT: Sticky
+    ports:
+      - "5002:8080"
+    depends_on: [ws01-01-a, ws01-01-b]
+
+  ws01-02:
+    build: ./WS01-02
+    image: ws01-02
+    hostname: ws01-02
+    ports:
+      - "5003:8080"
+
+  ws01-02-a:
+    image: ws01-02
+    hostname: ws01-02-a
+    depends_on: [ws01-02]
+  ws01-02-b:
+    image: ws01-02
+    hostname: ws01-02-b
+    depends_on: [ws01-02]
+  gateway-rr:
+    image: ws01-gateway
+    hostname: gateway-rr
+    environment:
+      ASPNETCORE_ENVIRONMENT: RoundRobin
+    ports:
+      - "5004:8080"
+    depends_on: [gateway-sticky, ws01-02-a, ws01-02-b]

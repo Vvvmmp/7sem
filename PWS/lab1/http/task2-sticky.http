@@ -1,0 +1,17 @@
+@gateway = http://127.0.0.1:5002
+
+### Клиент 1: первый запрос — gateway выбирает экземпляр и ставит cookie .WS01.Affinity
+POST {{gateway}}/stack
+Content-Type: application/json
+
+{ "RESULT": 100 }
+
+### Клиент 1: push 1 — тот же X-Instance
+PUT {{gateway}}/stack?ADD=1
+
+### Клиент 1: RESULT = 101, тот же X-Instance
+GET {{gateway}}/stack
+
+### 
+# @no-cookie-jar
+GET {{gateway}}/stack

@@ -1,0 +1,33 @@
+@host = http://localhost:5003
+
+### GET — начальное значение RESULT = 0
+GET {{host}}/stack
+
+### POST — установить RESULT = 10 (Set-Cookie: RESULT=10)
+POST {{host}}/stack
+Content-Type: application/json
+
+{ "RESULT": 10 }
+
+### PUT — push 5  (Set-Cookie: STACK=5)
+PUT {{host}}/stack?ADD=5
+
+### PUT — push 7  (Set-Cookie: STACK=5.7)
+PUT {{host}}/stack?ADD=7
+
+### GET — RESULT = 17
+GET {{host}}/stack
+
+### DELETE — pop 7  (RESULT = 15)
+DELETE {{host}}/stack
+
+### DELETE — pop 5  (RESULT = 10)
+DELETE {{host}}/stack
+
+### DELETE — стек пуст -> 409
+DELETE {{host}}/stack
+
+###
+# @no-cookie-jar
+GET {{host}}/stack
+Cookie: RESULT=1; STACK=2.3
